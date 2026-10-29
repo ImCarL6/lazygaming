@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LazyGaming.Core/LazyGaming.Core.csproj" />
+    <Project Path="src/LazyGaming.Host/LazyGaming.Host.csproj" />
+    <Project Path="src/LazyGaming.Platform.Windows/LazyGaming.Platform.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Core.Tests/Core.Tests.csproj" />
+    <Project Path="tests/Host.Tests/Host.Tests.csproj" />
+  </Folder>
+</Solution>

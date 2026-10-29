@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.wav binary
+*.wasm binary
+*.mem binary
+
+# Preserve third-party text verbatim, including upstream whitespace.
+src/LazyGaming.Host/ThirdParty/** -whitespace
+tv/stream-engine/** -whitespace

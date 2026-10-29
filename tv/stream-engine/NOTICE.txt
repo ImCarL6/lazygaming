@@ -1,0 +1,6 @@
+Moonlight Tizen v1.19.0, BrightCraft and contributors.
+Corresponding source: https://github.com/brightcraft/moonlight-tizen/tree/v1.19.0
+Official binary SHA256: b5e64dbf0c79678400d82078d785a27073adf3cf08254843a97517312c0e184e
+WASM/worker/audio/protocol reused unchanged. messages.js retains only the upstream RPC transport.
+LazyGaming supplies its own interface, lifecycle and stream policy. No Smart Hub service.
+See LICENSE-Moonlight and LICENSE-jQuery. This integration is experimental until tested on the TV.

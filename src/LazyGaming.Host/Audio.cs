@@ -1,0 +1,148 @@
+using System.Runtime.InteropServices;
+
+namespace LazyGaming;
+
+public record AudioDevice(string Id, string Name, bool Current);
+
+public static class Audio
+{
+    public static string[] CaptureDefaults()
+    {
+        var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+        try
+        {
+            var ids = new string[3];
+            for (int role = 0; role < 3; role++)
+            {
+                Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(0, role, out var device));
+                try { Marshal.ThrowExceptionForHR(device.GetId(out ids[role])); }
+                finally { Marshal.ReleaseComObject(device); }
+            }
+            return ids;
+        }
+        finally { Marshal.ReleaseComObject(enumerator); }
+    }
+    public static void RestoreDefaults(string[] ids)
+    {
+        var policy = (IPolicyConfig)new PolicyConfig();
+        try
+        {
+            int error = 0;
+            for (int role = 0; role < 3; role++) { var result = policy.SetDefaultEndpoint(ids[role], role); if (result < 0) error = result; }
+            Marshal.ThrowExceptionForHR(error);
+        }
+        finally { Marshal.ReleaseComObject(policy); }
+    }
+    public static string VerifyRoundTrip()
+    {
+        var tv = List().SingleOrDefault(d => d.Name.StartsWith("SAMSUNG", StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("Saída Samsung indisponível.");
+        var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+        var policy = (IPolicyConfig)new PolicyConfig();
+        var previous = new string[3];
+        string ReadDefault(int role)
+        {
+            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(0, role, out var device));
+            try { Marshal.ThrowExceptionForHR(device.GetId(out var id)); return id; }
+            finally { Marshal.ReleaseComObject(device); }
+        }
+        try
+        {
+            for (int role = 0; role < 3; role++) previous[role] = ReadDefault(role);
+            try
+            {
+                Select(tv.Id);
+                for (int role = 0; role < 3; role++)
+                    if (ReadDefault(role) != tv.Id) throw new InvalidOperationException("A troca de áudio não foi confirmada.");
+            }
+            finally
+            {
+                for (int role = 0; role < 3; role++) Marshal.ThrowExceptionForHR(policy.SetDefaultEndpoint(previous[role], role));
+            }
+            for (int role = 0; role < 3; role++)
+                if (ReadDefault(role) != previous[role]) throw new InvalidOperationException("A restauração de áudio não foi confirmada.");
+            return "PASS: saída Samsung selecionada e confirmada nos três papéis de áudio; todas as saídas anteriores restauradas e conferidas. Reprodução audível ainda depende do teste na TV.";
+        }
+        finally { Marshal.ReleaseComObject(policy); Marshal.ReleaseComObject(enumerator); }
+    }
+    public static List<AudioDevice> List()
+    {
+        var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+        try
+        {
+            string? current = null;
+            if (enumerator.GetDefaultAudioEndpoint(0, 1, out var def) == 0)
+            { try { Marshal.ThrowExceptionForHR(def.GetId(out current)); } finally { Marshal.ReleaseComObject(def); } }
+            Marshal.ThrowExceptionForHR(enumerator.EnumAudioEndpoints(0, 1, out var devices));
+            try
+            {
+                Marshal.ThrowExceptionForHR(devices.GetCount(out var count));
+                var result = new List<AudioDevice>();
+                for (uint i = 0; i < count; i++)
+                {
+                    Marshal.ThrowExceptionForHR(devices.Item(i, out var device));
+                    try
+                    {
+                        Marshal.ThrowExceptionForHR(device.GetId(out var id));
+                        Marshal.ThrowExceptionForHR(device.OpenPropertyStore(0, out var store));
+                        try
+                        {
+                            var key = new PropertyKey { Format = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), Id = 14 };
+                            Marshal.ThrowExceptionForHR(store.GetValue(ref key, out var value));
+                            try { result.Add(new(id, Marshal.PtrToStringUni(value.Pointer) ?? "Saída de áudio", id == current)); }
+                            finally { PropVariantClear(ref value); }
+                        }
+                        finally { Marshal.ReleaseComObject(store); }
+                    }
+                    finally { Marshal.ReleaseComObject(device); }
+                }
+                return result;
+            }
+            finally { Marshal.ReleaseComObject(devices); }
+        }
+        finally { Marshal.ReleaseComObject(enumerator); }
+    }
+    public static void Select(string id)
+    {
+        if (!List().Any(d => d.Id == id)) throw new InvalidOperationException("Saída de áudio desconectada ou indisponível.");
+        // PolicyConfig é uma interface Windows não documentada: falha explícita em versões incompatíveis.
+        var policy = (IPolicyConfig)new PolicyConfig();
+        try { for (var role = 0; role < 3; role++) Marshal.ThrowExceptionForHR(policy.SetDefaultEndpoint(id, role)); }
+        finally { Marshal.ReleaseComObject(policy); }
+    }
+    [DllImport("ole32.dll")] static extern int PropVariantClear(ref PropVariant value);
+    [StructLayout(LayoutKind.Sequential)] struct PropertyKey { public Guid Format; public uint Id; }
+    [StructLayout(LayoutKind.Explicit, Size = 24)] struct PropVariant { [FieldOffset(0)] public ushort Type; [FieldOffset(8)] public nint Pointer; }
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceEnumerator
+    {
+        [PreserveSig] int EnumAudioEndpoints(int flow, uint mask, out IMMDeviceCollection devices);
+        [PreserveSig] int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device);
+    }
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceCollection { [PreserveSig] int GetCount(out uint count); [PreserveSig] int Item(uint index, out IMMDevice device); }
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDevice
+    {
+        [PreserveSig] int Activate(ref Guid iid, uint context, nint activation, out nint result);
+        [PreserveSig] int OpenPropertyStore(uint access, out IPropertyStore store);
+        [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+    }
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int GetAt(uint index, out PropertyKey key);
+        [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant value);
+    }
+    [ComImport, Guid("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")] class PolicyConfig { }
+    [ComImport, Guid("F8679F50-850A-41CF-9C72-430F290290C8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPolicyConfig
+    {
+        void GetMixFormat(); void GetDeviceFormat(); void ResetDeviceFormat(); void SetDeviceFormat();
+        void GetProcessingPeriod(); void SetProcessingPeriod(); void GetShareMode(); void SetShareMode();
+        void GetPropertyValue(); void SetPropertyValue();
+        [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, int role);
+    }
+}

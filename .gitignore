@@ -1,0 +1,48 @@
+# Segredos e materiais privados
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.pwd
+*.pri
+*.csr
+*.crt
+/private/
+/certificates/
+/logs/
+*.log
+
+# Dependências e produtos de build
+node_modules/
+/build/
+/dist/
+/outputs/
+.buildResult/
+*.wgt
+bin/
+obj/
+
+# Estado operacional desta instalação e anexos privados
+/AGENTS.md
+/.codex-remote-attachments/
+/.vs/
+*.user
+*.suo
+__pycache__/
+/docs/*
+!/docs/ARQUITETURA.md
+!/docs/CONTROLES.md
+!/docs/DESENVOLVIMENTO.md
+pairing.json
+tv-recovery.json
+session.json
+admin.json
+
+# Runtime upstream obtido com checksum; não redistribuir binários no Git
+/tv/stream-engine/moonlight-wasm.js
+/tv/stream-engine/moonlight-wasm.js.mem
+/tv/stream-engine/moonlight-wasm.wasm
+/tv/stream-engine/moonlight-wasm.worker.js

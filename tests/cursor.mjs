@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {readFileSync} from 'node:fs';
+const source=readFileSync('tv/app.js','utf8'), css=readFileSync('tv/style.css','utf8');
+const classes=new Set(['controller-navigation','cursor-idle']);let move,timer;
+const context={desktop:true,mouseEnabled:true,document:{documentElement:{classList:{remove:(...names)=>names.forEach(n=>classes.delete(n)),add:n=>classes.add(n)}},addEventListener:(_,f)=>move=f},setTimeout:f=>{timer=f;return 1;},clearTimeout(){}};
+vm.createContext(context);vm.runInContext(source.slice(source.indexOf('var cursorIdleTimer;')),context);
+move({movementX:0,movementY:0});assert.ok(classes.has('controller-navigation'),'mouse parado não expõe cursor');
+move({movementX:2,movementY:0});assert.ok(!classes.has('controller-navigation')&&!classes.has('cursor-idle'),'movimento real mostra cursor no modo mouse');
+timer();assert.ok(classes.has('cursor-idle'),'inatividade esconde cursor');
+context.mouseEnabled=false;move({movementX:2,movementY:0});assert.ok(classes.has('cursor-idle'),'modo desligado não mostra cursor');
+assert.ok(css.includes('.desktop-launcher.controller-navigation *')&&css.includes('.desktop-launcher.cursor-idle *'),'controle/inatividade vencem regra do modo mouse');
+console.log('PASS: cursor acompanha movimento real, inatividade e modo mouse sem persistir sobre navegação por controle.');
