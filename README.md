@@ -34,6 +34,8 @@ python scripts/Verificar-Pacote.py
 
 `StageOnly` prepara arquivos sem assinatura. A CLI gera `outputs/LazyGaming.wgt`; instalação na TV é uma etapa separada pela CLI Tizen. Atualizações de um app existente devem conservar identidade de aplicação e certificado de autor. Não substitua o certificado de uma instalação já pareada.
 
+Para preservar um WGT anterior, use `-OutputDirectory outputs/tizen-0.15.0` no empacotador e `--package outputs/tizen-0.15.0/LazyGaming.wgt` no verificador.
+
 No primeiro uso, abra `http://127.0.0.1:47831` no PC, gere o código e conecte a TV. Novo pareamento substitui a chave anterior; use **Recuperar conexão** na própria TV para vínculos existentes. O painel PC utiliza autenticação local independente.
 
 ## Controles

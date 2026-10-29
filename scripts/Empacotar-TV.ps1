@@ -1,11 +1,12 @@
 ﻿param(
     [string]$TizenCli = $env:LAZYGAMING_TIZEN_CLI,
     [string]$SigningProfile = $env:LAZYGAMING_TIZEN_PROFILE,
+    [string]$OutputDirectory,
     [switch]$StageOnly
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$outputDir = Join-Path $projectRoot 'outputs'
+$outputDir = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $projectRoot 'outputs' }
 $stage = Join-Path $outputDir ('staging-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 if (!$StageOnly) {
     if (!$TizenCli) { $command = Get-Command tizen,tizen.bat -ErrorAction SilentlyContinue | Select-Object -First 1; if ($command) { $TizenCli = $command.Source } }

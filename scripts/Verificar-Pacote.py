@@ -1,5 +1,6 @@
 """Confere conteúdo, hashes XMLDSig e assinaturas RSA do WGT sem abrir chaves privadas."""
 import base64
+import argparse
 import hashlib
 from pathlib import Path
 import zipfile
@@ -11,7 +12,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
 root = Path(__file__).resolve().parents[1]
-package = root / 'outputs' / 'LazyGaming.wgt'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--package', type=Path, default=root / 'outputs' / 'LazyGaming.wgt')
+package = parser.parse_args().package
 namespace = {'ds': 'http://www.w3.org/2000/09/xmldsig#'}
 expected = {'app.js', 'platform.js', 'presentation.js', 'config.xml', 'crypto.js', 'index.html', 'style.css', 'stream.js', 'stream-policy.js', 'author-signature.xml', 'signature1.xml', 'LICENSE', 'THIRD_PARTY.md'}
 expected.update(p.relative_to(root / 'tv').as_posix() for p in (root / 'tv' / 'assets').rglob('*') if p.is_file())
