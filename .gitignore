@@ -36,6 +36,11 @@ __pycache__/
 !/docs/ARQUITETURA.md
 !/docs/CONTROLES.md
 !/docs/DESENVOLVIMENTO.md
+!/docs/MIGRACAO-0.15.md
+!/docs/INTEGRACAO-TV.md
+!/docs/ATUALIZACOES-COMPARTILHADAS.md
+!/docs/PROMPT-HENRIQUE-0.15.md
+!/docs/ESTADO-DERIVADO-MODELO.md
 pairing.json
 tv-recovery.json
 session.json

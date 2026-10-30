@@ -58,6 +58,8 @@ No primeiro uso, abra `http://127.0.0.1:47831` no PC, gere o código e conecte a
 
 [Arquitetura](docs/ARQUITETURA.md) · [Adaptadores de controle](docs/CONTROLES.md) · [Desenvolvimento e validação](docs/DESENVOLVIMENTO.md)
 
+Para integrar a base a um projeto já adaptado, use o [guia de migração 0.11.1 → 0.15](docs/MIGRACAO-0.15.md), o [contrato de integração do app TV](docs/INTEGRACAO-TV.md) e o [fluxo de atualizações compartilhadas](docs/ATUALIZACOES-COMPARTILHADAS.md). Há um [prompt para a IA do Henrique](docs/PROMPT-HENRIQUE-0.15.md) e um [modelo de estado da integração](docs/ESTADO-DERIVADO-MODELO.md). O fluxo atual recebe código por Git e exige integração/testes; não instala atualizações automaticamente.
+
 ## Dados e distribuição
 
 Pareamento, recuperação, snapshots e cache ficam em `%LOCALAPPDATA%/LazyGaming`, fora do Git/WGT. Nunca exponha a API à Internet; ela usa HTTP/HMAC em LAN confiável. Encerrar pede confirmação; forçar exige confirmar possível perda de progresso. Telas/áudio são restaurados ao terminar a sessão.

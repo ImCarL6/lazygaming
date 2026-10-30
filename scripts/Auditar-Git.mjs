@@ -13,7 +13,11 @@ const secrets = [
 ];
 let failures = 0;
 for (const file of files) {
-  const privateDoc = file.startsWith('docs/') && !['docs/ARQUITETURA.md', 'docs/CONTROLES.md', 'docs/DESENVOLVIMENTO.md'].includes(file);
+  const privateDoc = file.startsWith('docs/') && ![
+    'docs/ARQUITETURA.md', 'docs/CONTROLES.md', 'docs/DESENVOLVIMENTO.md',
+    'docs/MIGRACAO-0.15.md', 'docs/INTEGRACAO-TV.md', 'docs/ATUALIZACOES-COMPARTILHADAS.md',
+    'docs/PROMPT-HENRIQUE-0.15.md', 'docs/ESTADO-DERIVADO-MODELO.md'
+  ].includes(file);
   if (forbidden.test(file) || privateDoc) { console.error('Arquivo privado/produto de build no índice:', file); failures++; continue; }
   const bytes = execFileSync('git', ['show', `:${file}`], { maxBuffer: 16 * 1024 * 1024 });
   if (file.endsWith('.wav')) {
