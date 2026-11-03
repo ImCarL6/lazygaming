@@ -68,8 +68,10 @@ public sealed class TvSession : IGameEnvironment
     readonly string file;
     readonly string directory;
     readonly ISessionPlatform platform;
+    readonly DisplayPreferenceStore preferences;
     Saved? saved;
     bool manualAudio, restoreFailed, monitorsEnabled;
+    bool preferredMonitorsEnabled;
     string? note;
     string? audioId;
     readonly object gate = new();
@@ -86,8 +88,8 @@ public sealed class TvSession : IGameEnvironment
         this.directory = directory;
         this.platform = platform ?? new NativeSessionPlatform();
         file = Path.Combine(directory, "session.json");
-        var profile = Path.Combine(directory, "display-profile.json");
-        if (File.Exists(profile)) monitorsEnabled = JsonSerializer.Deserialize<DisplayPreference>(File.ReadAllText(profile))?.MonitorsEnabled ?? false;
+        preferences = new(directory);
+        monitorsEnabled = preferredMonitorsEnabled = preferences.Load();
         if (File.Exists(file)) {
             saved = JsonSerializer.Deserialize<Saved>(File.ReadAllText(file), JsonOptions);
             monitorsEnabled = saved?.MonitorsEnabled ?? monitorsEnabled;
@@ -103,14 +105,13 @@ public sealed class TvSession : IGameEnvironment
             // Recuperação explícita via Continuar: não repetir automaticamente o perfil que perdeu a TV.
             if (saved != null && !Ready() && monitorsEnabled) {
                 monitorsEnabled = false; saved = saved with { MonitorsEnabled = false };
-                File.WriteAllText(file, JsonSerializer.Serialize(saved, JsonOptions));
-                File.WriteAllText(Path.Combine(directory, "display-profile.json"), JsonSerializer.Serialize(new DisplayPreference(false)));
+                DurableJson.Write(file, saved, JsonOptions);
             }
             if (saved == null)
             {
                 platform.ValidateTv(); // Identificar a TV antes de alterar qualquer coisa.
                 saved = new(platform.CaptureDisplays(), platform.CaptureAudio(), monitorsEnabled, Stream: mode == "stream");
-                File.WriteAllText(file, JsonSerializer.Serialize(saved, JsonOptions));
+                DurableJson.Write(file, saved, JsonOptions);
                 manualAudio = false; audioId = null;
             }
             restoreFailed = false;
@@ -148,26 +149,25 @@ public sealed class TvSession : IGameEnvironment
     {
         lock (gate) {
             platform.SelectAudio(id); manualAudio = true; note = null; audioId = null;
-            if (saved != null) { saved = saved with { ManualAudio = true }; File.WriteAllText(file, JsonSerializer.Serialize(saved, JsonOptions)); }
+            if (saved != null) { saved = saved with { ManualAudio = true }; DurableJson.Write(file, saved, JsonOptions); }
         }
     }
     public void SetMonitors(bool enabled)
     {
         lock (gate) {
             if (saved != null && (restoreFailed || !Ready())) throw new InvalidOperationException("A TV não está no destino esperado. Use Continuar na TV antes de alterar os monitores.");
-            if (monitorsEnabled == enabled) return;
-            if (saved != null) {
+            if (saved != null && monitorsEnabled != enabled) {
                 if (enabled) platform.PrepareDesktop(saved.Displays);
                 else {
                     platform.PrepareTv();
                     platform.ConfigureMonitors(saved.Displays, false);
                 }
                 saved = saved with { MonitorsEnabled = enabled };
-                File.WriteAllText(file, JsonSerializer.Serialize(saved, JsonOptions));
+                DurableJson.Write(file, saved, JsonOptions);
             }
             // Sem sessão: guardar escolha, sem mudar telas ou áudio do usuário.
-            File.WriteAllText(Path.Combine(directory, "display-profile.json"), JsonSerializer.Serialize(new DisplayPreference(enabled)));
-            monitorsEnabled = enabled;
+            preferences.Save(enabled);
+            monitorsEnabled = preferredMonitorsEnabled = enabled;
         }
     }
     public void Restore()
@@ -182,6 +182,7 @@ public sealed class TvSession : IGameEnvironment
                 GameDisplaySettings.Restore(directory);
                 saved = null; manualAudio = false; audioId = null; note = null;
                 File.Delete(file);
+                monitorsEnabled = preferredMonitorsEnabled;
             }
             catch { restoreFailed = true; note = "Não foi possível restaurar toda a configuração anterior. Reinicie o auxiliar após conferir os cabos."; }
         }
@@ -202,7 +203,7 @@ public sealed class SimulatedEnvironment : IGameEnvironment
     public void Tick() { }
     public void Restore() { if (Active) Restorations++; Active = false; }
     public void ManualAudio(string id) { }
-    bool monitorsEnabled;
+    bool monitorsEnabled = true;
     public DisplayControls DisplayControls => new(Active, monitorsEnabled);
     public void SetMonitors(bool enabled) => monitorsEnabled = enabled;
 }

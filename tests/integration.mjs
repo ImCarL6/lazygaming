@@ -42,6 +42,7 @@ try {
   assert.equal((await call('/api/games/wilds/settings')).status, 401);
   assert.equal((await call('/api/games/wilds/settings', {name:'Test'})).status, 401);
   assert.equal((await call('/api/presentation')).status, 401);
+  assert.equal((await call('/api/presentation/cable')).status, 401);
   assert.equal((await call('/api/stream/status')).status, 401);
   assert.equal((await call('/api/stream/configuration')).status, 401);
   assert.equal((await call('/api/stream/pair', {pin:'1234'})).status, 401);
@@ -92,7 +93,11 @@ try {
   assert.equal((await api('/api/stream/pair', {pin:'1234'})).status, 403, 'sem pareamento via cliente PC/simulação');
   assert.equal((await api('/api/stream/confirm', {})).status, 403);
   const presentation = await api('/api/presentation');
+  const cableOnly = await api('/api/presentation/cable');
+  assert.equal(cableOnly.status, 200);
+  assert.deepEqual(cableOnly.data, presentation.data.cable, 'consulta de Cabo independente da verificação de Stream');
   assert.equal((await api('/api/displays', { monitorsEnabled: 'true' })).status, 400, 'perfil exige booleano');
+  assert.equal((await api('/api/displays')).data.monitorsEnabled, true, 'monitores ligados sem preferência anterior');
   assert.equal((await api('/api/displays', { monitorsEnabled: true })).status, 200);
   assert.equal((await api('/api/displays')).data.monitorsEnabled, true);
   assert.equal((await api('/api/status')).data.state.environment.active, false, 'guardar perfil não prepara telas fora da sessão');

@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+# No logon, executar pelo iniciador WinExe (Construir-Iniciador-Oculto.ps1).
+# -WindowStyle Hidden sozinho pode deixar o Terminal padrão visível.
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskDirectory = Join-Path $taskRoot 'dist\LazyGaming'
 $taskExecutable = Join-Path $taskDirectory 'LazyGaming.Host.exe'

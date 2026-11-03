@@ -14,9 +14,11 @@ powershell -NoProfile -File scripts/Empacotar-TV.ps1 -StageOnly
 
 Os testes do núcleo são portáveis: `dotnet run --project tests/Core.Tests`. O Host e os testes completos exigem Windows. O script usa build serial/compilador local para evitar dependência de servidor de compilação persistente; não modifica configurações globais.
 
-`Testar.ps1` compila a solução, roda Core.Tests/Host.Tests, todos os testes `.mjs` e a adaptação Moonlight Python. Integrações HTTP iniciam auxiliares `--test` em portas próprias, usam dados/segredos temporários e processos simulados, encerrando os próprios filhos. Nenhum teste deve parear um navegador com o auxiliar de produção.
+`Testar.ps1` compila a solução, roda Core.Tests/Host.Tests e todos os testes `.mjs`, `.py` e `.ps1` na raiz de `tests`. Integrações HTTP iniciam auxiliares `--test` em portas próprias, usam dados/segredos temporários e processos simulados, encerrando os próprios filhos. Nenhum teste deve parear um navegador com o auxiliar de produção.
 
 Para prévia visual, `--preview-library` usa porta 47832 e dados isolados. Ela não inicia/encerra jogos reais nem muda telas/áudio. Não substitua build em uso; a publicação padrão em `outputs/pc-package` não toca `dist/LazyGaming`.
+
+Para conferir a recuperação de foco com WebView2 real, execute `dotnet run --project tests/NativeDesktopFixture -c Release -- --verify-opening-focus`. Esse teste abre janelas próprias, usa HTTP loopback na porta47835 e dados temporários, provoca perda tardia de foco e verifica recuperação na mesma abertura e cancelamento ao ocultar. Altera o foreground durante o teste; não inicia jogos nem usa pareamento/dados de produção. Core.Tests/Host.Tests também verificam a política de estabilidade, cancelamento por entrada manual, limites e soltura dos botões sem abrir janelas.
 
 ## Empacotamento
 

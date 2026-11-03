@@ -10,6 +10,8 @@ var mouseEnabled = true;
 var previousEnvironmentNote = '';
 var setupParentOptions = false;
 var presentationMode = 'cable';
+var presentationCache = {}, presentationRequests = {}, presentationOrigin = '', presentationEpoch = 0;
+var transportTicket = 0, connectionPolling = false;
 var desktop = localStorage.getItem('desktop-client') === 'true', syncRevision = -1, selectionTimer, selectionDirty = false, applyingSync = false, saveSelectionTimer;
 var inputClient = LGCrypto.nonce();
 var proofAt = 0, lastNavigationAt = 0;
@@ -204,22 +206,60 @@ async function showStream() {
   await window.LGStream.start();
 }
 async function choosePresentation() {
-  await reportStreamClient();
-  var availability = await api('/api/presentation');
-  var previous = controllerFocus || document.activeElement;
+  var previous = controllerFocus || document.activeElement, ticket = ++transportTicket, navigationAt = lastNavigationAt;
+  var cable = null, stream = null;
   $('transport').hidden = false;
-  $('chooseCable').hidden = availability.cable.available === false;
-  $('chooseCable').disabled = availability.cable.available === null;
-  $('chooseStream').disabled = !availability.stream.available;
-  $('transportNote').textContent = [availability.cable.note, availability.stream.note].filter(Boolean).join(' ');
-  focusControl(!$('chooseCable').hidden && !$('chooseCable').disabled ? $('chooseCable') : !$('chooseStream').disabled ? $('chooseStream') : $('cancelTransport'));
   return new Promise(function (resolve) {
-    function close(mode) { $('transport').hidden = true; if (previous && previous.isConnected) focusControl(previous); resolve(mode); }
-    $('chooseCable').onclick = function () { close('cable'); };
-    $('chooseStream').onclick = function () { close('stream'); };
+    function close(mode) {
+      if (ticket !== transportTicket) return;
+      transportTicket++; $('transport').hidden = true;
+      if (previous && previous.isConnected) focusControl(previous); resolve(mode);
+    }
+    function render() {
+      if (ticket !== transportTicket) return;
+      $('chooseCable').hidden = !!cable && cable.available === false;
+      $('chooseCable').disabled = !cable || cable.available !== true;
+      $('chooseStream').disabled = !stream || stream.available !== true;
+      $('transportNote').textContent = [cable ? cable.note : 'Verificando Cabo…', stream ? stream.note : 'Verificando Stream…'].filter(Boolean).join(' ');
+      var current = controllerFocus || document.activeElement;
+      if (!current || current.disabled || current.hidden || (current === $('cancelTransport') && lastNavigationAt === navigationAt)) {
+        focusControl(!$('chooseCable').hidden && !$('chooseCable').disabled ? $('chooseCable') : !$('chooseStream').disabled ? $('chooseStream') : $('cancelTransport'));
+      }
+    }
+    $('chooseCable').onclick = function () { if (!$('chooseCable').disabled) close('cable'); };
+    $('chooseStream').onclick = function () { if (!$('chooseStream').disabled) close('stream'); };
     $('cancelTransport').onclick = function () { close(null); };
+    // O diálogo responde ao clique antes de qualquer consulta de rede.
+    $('chooseCable').disabled = $('chooseStream').disabled = true;
+    focusControl($('cancelTransport')); render();
+    ['cable', 'stream'].forEach(function (kind) {
+      var saved = presentationOrigin === base && presentationCache[kind];
+      if (saved && Date.now() - saved.at < 10000) { if (kind === 'cable') cable = saved.value; else stream = saved.value; render(); }
+      presentationAvailability(kind).then(function (value) { if (kind === 'cable') cable = value; else stream = value; render(); });
+    });
   });
 }
+function presentationAvailability(kind) {
+  if (presentationOrigin !== base) { presentationOrigin = base; presentationCache = {}; presentationRequests = {}; presentationEpoch++; }
+  var saved = presentationCache[kind], epoch = presentationEpoch;
+  if (saved && Date.now() - saved.at < 10000) return Promise.resolve(saved.value);
+  if (presentationRequests[kind]) return presentationRequests[kind];
+  var request = (async function () {
+    if (kind === 'cable') return api('/api/presentation/cable');
+    await reportStreamClient();
+    if (epoch !== presentationEpoch) throw Error('A conexão mudou. Tente novamente.');
+    return (await api('/api/presentation')).stream;
+  })().catch(function () { return { available: false, note: 'Não foi possível verificar ' + (kind === 'cable' ? 'Cabo' : 'Stream') + '. Feche e tente novamente.' }; });
+  presentationRequests[kind] = request.then(function (value) {
+    if (epoch === presentationEpoch) {
+      if (value.available === true || !value.note || value.note.indexOf('Não foi possível verificar') !== 0) presentationCache[kind] = { at: Date.now(), value: value };
+      delete presentationRequests[kind];
+    }
+    return value;
+  });
+  return presentationRequests[kind];
+}
+function warmPresentation() { presentationAvailability('cable'); presentationAvailability('stream'); }
 function currentGame() { return libraryGames.find(function (game) { return game.id === selectedGameId; }); }
 function focusSelectedGame() { var tile = Array.from($('games').querySelectorAll('button')).find(function (b) { return b.dataset.id === selectedGameId; }); if (tile) focusControl(tile); }
 function updateBackdrop(game) {
@@ -341,7 +381,9 @@ async function loadGameOptions(id) {
   $('gameName').value = details.customName || details.name;
   $('metadataQuery').value = details.metadata ? details.metadata.title : details.originalName;
   var metadata = details.metadata;
-  $('gameMetadataSummary').textContent = metadata ? [metadata.title, metadata.year, (metadata.developers || []).join(', '), (metadata.genres || []).join(' · ')].filter(Boolean).join(' · ') + ' · Steam' : 'Sem correspondência no catálogo.';
+  $('gameMetadataSummary').textContent = metadata ? [metadata.title, metadata.year, (metadata.developers || []).join(', '), (metadata.genres || []).join(' · '), metadata.language, metadata.source === 'local' ? 'PC' : 'Steam'].filter(Boolean).join(' · ') : 'Sem correspondência no catálogo.';
+  if ($('gameDescription')) { $('gameDescription').textContent = metadata && metadata.description || ''; $('gameDescription').hidden = !$('gameDescription').textContent; }
+  if ($('metadataCatalog')) $('metadataCatalog').hidden = !!(metadata && metadata.source === 'local');
 }
 function closeGameOptions() {
   $('gameOptions').hidden = true; gameOptionsId = ''; metadataSearchTicket++; focusSelectedGame();
@@ -352,6 +394,8 @@ if ($('gameSettings')) $('gameSettings').onclick = function () {
   gameOptionsId = game.id; metadataSearchTicket++;
   $('gameOptionsTitle').textContent = game.name; $('gameName').value = game.name; $('metadataQuery').value = game.name;
   $('gameMetadataSummary').textContent = ''; $('metadataResults').textContent = ''; $('metadataSearchState').textContent = '';
+  if ($('gameDescription')) { $('gameDescription').textContent = ''; $('gameDescription').hidden = true; }
+  if ($('metadataCatalog')) $('metadataCatalog').hidden = true;
   var icon = artworkMap[game.id] && artworkMap[game.id].icon; $('gameIcon').hidden = !icon;
   if (icon) { $('gameIcon').src = base + icon; $('gameIcon').onerror = function () { this.hidden = true; }; }
   $('gameOptions').hidden = false; focusControl($('closeGameOptions')); run(function () { return loadGameOptions(game.id); });
@@ -462,7 +506,7 @@ async function probeTv() {
         }, Number(localStorage.getItem('lazygaming-hdmi')) === source.number ? 'current' : ''));
       });
     }
-    await api('/api/tv', { stage: 'probe', version: '0.15.0', library: libraryGames.length, coversLoaded: Array.from($('games').querySelectorAll('img')).filter(function (i) { return i.complete && i.naturalWidth > 0; }).length, viewport: [innerWidth, innerHeight], hdmi: sources.map(function (s) { return s.number; }), current: { type: current.type, number: current.number }, selected: Number(localStorage.getItem('lazygaming-hdmi')) });
+    await api('/api/tv', { stage: 'probe', version: '0.15.2', library: libraryGames.length, coversLoaded: Array.from($('games').querySelectorAll('img')).filter(function (i) { return i.complete && i.naturalWidth > 0; }).length, viewport: [innerWidth, innerHeight], hdmi: sources.map(function (s) { return s.number; }), current: { type: current.type, number: current.number }, selected: Number(localStorage.getItem('lazygaming-hdmi')) });
   }
   catch (e) { try { await api('/api/tv', { stage: 'probe-error', error: e.name + ': ' + e.message }); } catch (_) { } }
 }
@@ -505,9 +549,11 @@ async function showHdmi() {
   }
 }
 async function connect() {
-  base = normalize($('address').value); await proof(base); persist(); await refresh(); await refreshAudio();
-  await enrollRecovery();
+  base = normalize($('address').value); await proof(base); persist(); await refresh();
   focusSelectedGame();
+  warmPresentation();
+  // Preparar configurações/vínculo sem prender o clique nas capas.
+  Promise.all([refreshAudio(), enrollRecovery()]).catch(function (error) { if (!busy) message(error.message); });
   probeTv();
 }
 $('newCode').onclick = function () { run(async function () {
@@ -701,12 +747,18 @@ document.addEventListener('focusin', function (event) {
   if (target && (target.tagName === 'BUTTON' || target.tagName === 'INPUT')) markControlFocus(target);
 });
 function pollConnection() {
-  if (!session || document.hidden || busy || needsPair) return;
+  if (!session || document.hidden || busy || needsPair || connectionPolling) return;
   if (typeof window !== 'undefined' && window.LGStream && window.LGStream.active && !window.LGStream.menuVisible) return;
   if (!connected) {
     if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
     run(desktop ? refresh : connect); // Recupera também a falha inicial, mesmo com a tela Conexão visível.
-  } else if ($('setup').hidden) run(refresh);
+  } else if ($('setup').hidden) {
+    connectionPolling = true;
+    Promise.resolve().then(refresh).catch(function (error) {
+      if (error.retryable) { connected = false; $('connection').textContent = 'Reconectando ao PC…'; updateLiveBackground(); }
+      if (!busy) message(error.message);
+    }).finally(function () { connectionPolling = false; });
+  }
 }
 document.addEventListener('visibilitychange', pollConnection);
 setInterval(pollConnection, 4000);

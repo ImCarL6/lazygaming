@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace LazyGaming;
 
-public record Game(string Id, string Name, string Launch, string ProcessPath, bool Steam = false, string? ArtworkId = null, string? Folder = null, string? ProcessArgument = null, string? LaunchDirectory = null);
+public record Game(string Id, string Name, string Launch, string ProcessPath, bool Steam = false, string? ArtworkId = null, string? Folder = null, string? ProcessArgument = null, string? LaunchDirectory = null, GameMetadata? LocalMetadata = null, string[]? LaunchArguments = null);
 public record Running(int Pid, string Path, string? Argument = null);
 public interface IGamePlatform
 {
@@ -21,12 +21,13 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
 {
     readonly ClosingGames closing = new();
     string? lastIdentificationError;
-    GameWindowTarget? windowTarget;
+    volatile GameWindowTarget? windowTarget;
+    readonly TaskbarOverflow taskbarOverflow = new(directory);
     public Func<bool>? MenuVisible { get; set; }
     string? lastFocusState;
     public void TargetDisplay(Game game) {
         _ = Displays.GameDisplay();
-        windowTarget = new(game.ProcessPath, DateTime.UtcNow.AddSeconds(90));
+        windowTarget = new(game.ProcessPath, DateTime.UtcNow.AddSeconds(90), WindowFocus.InputStamp);
     }
     public string? DisplayError => windowTarget?.Error;
     public void CancelTarget(Game game) => windowTarget?.Cancel(game.ProcessPath);
@@ -55,11 +56,22 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
     public void PlaceWindows(IReadOnlyList<Running> processes) { if (MenuVisible?.Invoke() == true) return; windowTarget?.Update(processes, DateTime.UtcNow, process => {
         using var verified = Verified(process);
         var window = verified.MainWindowHandle;
+        if (!WindowFocus.BelongsTo(window, process.Pid)) return false;
+        WindowFocus.RestoreForPlacement(window);
         bool positioned = WindowFocus.PlaceOnTv(window), focused = positioned && WindowFocus.ActivateGame(window);
-        var diagnostic = System.Text.Json.JsonSerializer.Serialize(new { pid = process.Pid, positioned, focused, window = WindowFocus.Inspect(window) });
+        if (positioned && windowTarget is { } target) {
+            taskbarOverflow.Schedule(window, process, () => ReferenceEquals(windowTarget, target)
+                && target.CanAutomate(DateTime.UtcNow) && MenuVisible?.Invoke() != true);
+        }
+        var diagnostic = System.Text.Json.JsonSerializer.Serialize(new { pid = process.Pid, positioned, focused, phase = windowTarget?.Phase, window = WindowFocus.Inspect(window) });
         if (diagnostic != lastFocusState) {
             lastFocusState = diagnostic;
             try { File.WriteAllText(Path.Combine(directory, "game-focus-status.json"), diagnostic); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            try {
+                var trace = Path.Combine(directory, "game-focus-history.jsonl");
+                if (File.Exists(trace) && new FileInfo(trace).Length > 65_536) File.WriteAllText(trace, "");
+                File.AppendAllText(trace, System.Text.Json.JsonSerializer.Serialize(new { at = DateTime.UtcNow, state = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(diagnostic) }) + Environment.NewLine);
+            } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
         return positioned && focused;
     }); }
@@ -115,15 +127,25 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
             rows = ((dynamic)service).ExecQuery("SELECT CommandLine FROM Win32_Process WHERE ProcessId=" + pid);
             foreach (dynamic row in (System.Collections.IEnumerable)rows)
             {
+                object? properties = null, property = null;
                 try
                 {
-                    string command = row.CommandLine ?? "";
+                    // A propriedade dinâmica CommandLine falha em SWbemObject mesmo
+                    // quando o WMI devolve o processo. Usar a coleção explícita,
+                    // como na identificação da janela do launcher.
+                    properties = row.Properties_;
+                    property = ((dynamic)properties).Item("CommandLine", 0);
+                    string command = ((dynamic)property).Value ?? "";
                     return RuntimeCommandMatches(command, argument);
                 }
-                finally { System.Runtime.InteropServices.Marshal.ReleaseComObject(row); }
+                finally {
+                    if (property != null) System.Runtime.InteropServices.Marshal.ReleaseComObject(property);
+                    if (properties != null) System.Runtime.InteropServices.Marshal.ReleaseComObject(properties);
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(row);
+                }
             }
         }
-        catch { throw new InvalidOperationException("Não foi possível identificar o runtime do jogo com segurança."); }
+        catch (Exception error) { throw new InvalidOperationException("Não foi possível identificar o runtime do jogo com segurança.", error); }
         finally { if (rows != null) System.Runtime.InteropServices.Marshal.ReleaseComObject(rows); if (service != null) System.Runtime.InteropServices.Marshal.ReleaseComObject(service); }
         return false;
     }
@@ -175,13 +197,17 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
         info.ArgumentList.Add("-applaunch"); info.ArgumentList.Add(id);
         return info;
     }
-    public static ProcessStartInfo LaunchInfo(Game game) => new(game.Launch) {
+    public static ProcessStartInfo LaunchInfo(Game game) {
+        var info = new ProcessStartInfo(game.Launch) {
         // EXE local não precisa de associações, DDE ou extensões do Shell.
         // ShellExecuteEx ficou preso no wrapper de Mighty e reteve o gate do jogo.
         // Steam continua usando seu protocolo/launcher já aprovado.
         UseShellExecute = game.Steam,
         WorkingDirectory = game.LaunchDirectory ?? Path.GetDirectoryName(game.ProcessPath)!
-    };
+        };
+        foreach (var argument in game.LaunchArguments ?? []) info.ArgumentList.Add(argument);
+        return info;
+    }
     static Process Verified(Running process)
     {
         var p = Process.GetProcessById(process.Pid);

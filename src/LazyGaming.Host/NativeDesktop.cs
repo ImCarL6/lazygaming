@@ -13,6 +13,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
 {
     readonly TaskCompletionSource<nint> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     GlassWindow? form;
+    Action? focusContent;
     volatile bool live;
     object dimensions = new { };
     string? issue;
@@ -24,6 +25,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 using var window = new GlassWindow(); form = window;
                 using var surface = new GameSurface();
                 using var web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
+                focusContent = () => { if (WindowFocus.IsForeground(window.Handle)) web.Focus(); };
                 window.Controls.Add(web); window.Owner = surface;
                 window.Activated += (_, _) => web.Focus();
                 using var timer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -77,14 +79,15 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 });
                 Application.Run();
             } catch (Exception e) { ready.TrySetException(e); }
-            finally { live = false; form = null; }
+            finally { live = false; focusContent = null; form = null; }
         }) { IsBackground = true, Name = "LazyGaming desktop" };
         ui.SetApartmentState(ApartmentState.STA); ui.Start();
         return ready.Task.WaitAsync(TimeSpan.FromSeconds(20));
     }
     public static bool SameOrigin(string supplied, Uri expected) => Uri.TryCreate(supplied, UriKind.Absolute, out var uri) &&
         uri.Scheme == expected.Scheme && uri.Host == expected.Host && uri.Port == expected.Port && uri.UserInfo.Length == 0;
-    public Task Show(Rectangle? bounds = null) => Dispatch(() => { if (bounds.HasValue) form!.Bounds = bounds.Value; form!.Show(); form.BringToFront(); });
+    public Task Show(Rectangle? bounds = null) => Dispatch(() => { if (bounds.HasValue) form!.Bounds = bounds.Value; form!.WindowState = FormWindowState.Normal; form.Show(); form.BringToFront(); focusContent?.Invoke(); });
+    public Task FocusInput() => Dispatch(() => focusContent?.Invoke());
     public Task Align(Rectangle bounds) => Dispatch(() => { form!.WindowState = FormWindowState.Normal; form.Bounds = bounds; });
     public Task Hide() => Dispatch(() => form!.Hide());
     Task Dispatch(Action action) {

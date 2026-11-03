@@ -13,6 +13,7 @@ public sealed class ArtworkStore(GameLibrary library)
     public string Root => Path.Combine(library.Directory, "library", "art");
     public string? FileFor(string id, string kind)
     {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(id, "^[a-zA-Z0-9-]{1,80}$")) return null;
         if (!library.Games.Any(g => library.Metadata.ArtworkId(g) == id || g.Id == id) || kind is not ("cover" or "backdrop" or "icon")) return null;
         var path = Path.Combine(Root, id, kind + ".jpg"); return File.Exists(path) ? path : null;
     }
@@ -32,9 +33,28 @@ public sealed class ArtworkStore(GameLibrary library)
         await Task.WhenAll(games.DistinctBy(g => library.Metadata.ArtworkId(g) ?? g.Id).Select(async game =>
         {
             await downloads.WaitAsync();
-            try { await Ensure(game with { ArtworkId = library.Metadata.ArtworkId(game) }); } catch { /* Arte ausente tem fallback; não impede administrar o jogo. */ }
+            try {
+                if (library.Metadata.For(game)?.Source == "local") EnsureLocal(game);
+                else await Ensure(game with { ArtworkId = library.Metadata.ArtworkId(game) });
+            } catch { /* Arte ausente tem fallback; não impede administrar o jogo. */ }
             finally { downloads.Release(); }
         })); } finally { refresh.Release(); }
+    }
+    void EnsureLocal(Game game)
+    {
+        var metadata = library.Metadata.For(game)!;
+        if (metadata.Artwork is not LocalArtwork art) return;
+        var folder = Path.Combine(Root, game.Id); Directory.CreateDirectory(folder);
+        foreach (var (kind, relative, url) in new[] { ("cover", art.Cover, art.CoverSourceUrl), ("backdrop", art.Backdrop, art.BackdropSourceUrl) }) {
+            var source = GameLibrary.SafeInside(Path.Combine(library.Directory, "library"), relative);
+            if (source == null || !File.Exists(source)) continue;
+            var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(source)));
+            var target = Path.Combine(folder, kind + ".jpg"); var stamp = target + ".source.json";
+            var provenance = JsonSerializer.Serialize(new { source = "local", page = metadata.SourceUrl, image = url, sha256 = hash });
+            if (File.Exists(target) && File.Exists(stamp) && File.ReadAllText(stamp) == provenance) continue;
+            using var input = File.OpenRead(source); OptimizeLocal(input, target, kind);
+            File.WriteAllText(stamp, provenance);
+        }
     }
     void EnsureIcon(Game game)
     {
@@ -115,12 +135,13 @@ public sealed class ArtworkStore(GameLibrary library)
         }
         if (File.Exists(cover) && File.Exists(backdrop)) File.WriteAllText(stamp, sourceKey);
     }
-    static void Optimize(Stream input, string output, string kind)
+    public static void OptimizeLocal(Stream input, string output, string kind) => Optimize(input, output, kind, true);
+    static void Optimize(Stream input, string output, string kind, bool local = false)
     {
         using var image = Image.FromStream(input);
         if (!Useful(image)) throw new InvalidDataException("Placeholder de arte sem conteúdo.");
         if ((long)image.Width * image.Height > 50_000_000) throw new InvalidDataException();
-        double scale = kind == "icon" ? Math.Min(1, 256.0 / Math.Max(image.Width, image.Height)) : kind == "cover" ? Math.Min(1, Math.Min(600.0 / image.Width, 900.0 / image.Height)) : Math.Min(1, Math.Min(2560.0 / image.Width, 1440.0 / image.Height));
+        double scale = kind == "icon" ? Math.Min(1, 256.0 / Math.Max(image.Width, image.Height)) : kind == "cover" ? Math.Min(1, Math.Min((local ? 480.0 : 600.0) / image.Width, (local ? 720.0 : 900.0) / image.Height)) : Math.Min(1, Math.Min((local ? 1600.0 : 2560.0) / image.Width, (local ? 900.0 : 1440.0) / image.Height));
         using var bitmap = new Bitmap(Math.Max(1, (int)(image.Width * scale)), Math.Max(1, (int)(image.Height * scale)), PixelFormat.Format24bppRgb);
         using (var graphics = Graphics.FromImage(bitmap))
         { graphics.Clear(Color.Black); graphics.InterpolationMode = InterpolationMode.HighQualityBicubic; graphics.DrawImage(image, 0, 0, bitmap.Width, bitmap.Height); }

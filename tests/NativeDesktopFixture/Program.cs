@@ -2,6 +2,8 @@ using System.Drawing;
 using System.Windows.Forms;
 using LazyGaming;
 
+if (args.Contains("--verify-opening-focus")) { await LauncherOpeningFixture.Run(); return; }
+
 var ready = new TaskCompletionSource<nint>(TaskCreationOptions.RunContinuationsAsynchronously);
 Form? source = null;
 var ui = new Thread(() => {

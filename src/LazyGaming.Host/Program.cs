@@ -43,6 +43,16 @@ if (args.Contains("--preview-feedback-on") || args.Contains("--preview-feedback-
     using var sample = new ControllerFeedback(true); await Task.Delay(400);
     sample.Notify(args.Contains("--preview-feedback-on"), 30000); await Task.Delay(31000); return;
 }
+if (Array.IndexOf(args, "--replace-local-game") is var replaceIndex && replaceIndex >= 0) {
+    if (replaceIndex + 2 >= args.Length) throw new InvalidOperationException("Informe o jogo local existente e a nova ficha.");
+    var importDirectory = Environment.GetEnvironmentVariable("LAZYGAMING_IMPORT_DATA") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming");
+    Console.WriteLine(new LocalGameStore(importDirectory).Import(args[replaceIndex + 2], args[replaceIndex + 1])); return;
+}
+if (Array.IndexOf(args, "--import-local-game") is var importIndex && importIndex >= 0) {
+    if (importIndex + 1 >= args.Length) throw new InvalidOperationException("Informe o arquivo da ficha local.");
+    var importDirectory = Environment.GetEnvironmentVariable("LAZYGAMING_IMPORT_DATA") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming");
+    Console.WriteLine(new LocalGameStore(importDirectory).Import(args[importIndex + 1])); return;
+}
 if (args.Contains("--inspect-library")) { Console.WriteLine(JsonSerializer.Serialize(new GameLibrary(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming")).Inspect())); return; }
 if (args.Contains("--verify-catalog")) {
     var catalogDirectory = Path.Combine(AppContext.BaseDirectory, "catalog-validation");
@@ -181,7 +191,8 @@ var games = new GameService(library, platform, environment);
 using var feedback = test ? null : new ControllerFeedback();
 var touchpad = new TouchpadMouse(() => !test && environment.Active, value => feedback?.Notify(value), () => { _ = Task.Run(async () => { try { await desktop.Toggle(); } catch (InvalidOperationException e) { feedback?.NotifyMessage(e.Message); } catch { feedback?.NotifyMessage("Não foi possível abrir o painel. Tente novamente."); } }); }, () => desktop.AcceptsControllerInput, controllerKeys.Push);
 desktop.ControllerReleased = () => test || touchpad.Released;
-desktop.ResetInput = controllerKeys.Clear;
+desktop.ResetInput = () => { controllerKeys.Clear(); touchpad.ResetNavigation(); };
+desktop.FocusIssue = message => feedback?.NotifyMessage(message);
 var app = builder.Build();
 object? tvReport = null, controllerAck = null;
 var hosts = addresses.Select(a => a.Address.ToString()).Append("localhost").Append("127.0.0.1").ToHashSet();
@@ -295,6 +306,7 @@ app.MapPost("/api/local-pairing", (HttpContext ctx) =>
 app.MapGet("/api/status", async (HttpContext ctx) => new { state = await games.StatusAsync(ctx.RequestAborted), artwork = library.Games.ToDictionary(g => g.Id, g => new { cover = artwork.Url(g, "cover"), backdrop = artwork.Url(g, "backdrop"), icon = artwork.Url(g, "icon") }), controller = touchpad.Status, launcher = new { visible = desktop.Visible, focused = desktop.Focused, placement = desktop.Placement, discovery = desktop.Discovery, input = controllerKeys.Status, ack = controllerAck }, displays = environment.DisplayControls, simulation = test, preview,
     simulatedLaunches = (platform as SimulatedGames)?.LaunchCount });
 app.MapGet("/api/presentation", async () => new { cable = test ? new CableAvailability(true, false, null) : Presentation.InspectCable(), stream = await StreamStatus() });
+app.MapGet("/api/presentation/cable", () => test ? new CableAvailability(true, false, null) : Presentation.InspectCable());
 app.MapGet("/api/stream/status", StreamStatus);
 app.MapGet("/api/stream/controls", () => streamControls.Snapshot());
 app.MapPost("/api/stream/controls", (HttpContext ctx) => {

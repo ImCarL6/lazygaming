@@ -10,7 +10,9 @@ public sealed class TouchpadMouse(Func<bool> sessionActive, Action<bool>? feedba
     public bool Released => !connected || processor.Released(Environment.TickCount64);
     string? issue;
     long lastReport; int reportBytes, reportId;
-    public object Status => new { enabled = Enabled, connected, touchAvailable, released = Released, reportBytes, reportId,
+    int resetNavigation;
+    public void ResetNavigation() => Interlocked.Exchange(ref resetNavigation, 1);
+    public object Status => new { enabled = Enabled, connected, touchAvailable, released = Released, navigationArmed = processor.NavigationArmed, panelEligible = navigationActive?.Invoke() == true, reportBytes, reportId,
         reportAgeMs = lastReport == 0 ? (long?)null : Environment.TickCount64 - Interlocked.Read(ref lastReport), issue };
     public async Task Run(CancellationToken cancellation)
     {
@@ -38,6 +40,7 @@ public sealed class TouchpadMouse(Func<bool> sessionActive, Action<bool>? feedba
                         Interlocked.Exchange(ref lastReport, now); reportBytes = length; reportId = buffer[0];
                         var state = stream.Adapter.Decode(buffer.AsSpan(0, length));
                         touchAvailable = state?.Touch != null;
+                        if (Interlocked.Exchange(ref resetNavigation, 0) != 0) processor.ResetNavigation(now);
                         var result = processor.Process(state, now, sessionActive(), navigationActive?.Invoke() == true);
                         foreach (var key in result.Navigation) navigationKey?.Invoke(key.Key, key.Repeat);
                         foreach (var action in result.Mouse) mouseOutput.Send(action);

@@ -31,12 +31,16 @@ public sealed class DesktopLauncher(int port, string directory, Func<nint>? game
     NativeDesktop? native;
     readonly SemaphoreSlim toggleGate = new(1, 1);
     volatile bool opening, closing;
+    CancellationTokenSource? openingWatch;
+    object openingStatus = new { phase = "idle" };
+    string lastOpeningDiagnostic = "";
     string ownershipError = "";
     object windowDiscovery = new { };
-    public object Discovery => new { counts = windowDiscovery, ownershipError, composition = native?.Status };
+    public object Discovery => new { counts = windowDiscovery, ownershipError, composition = native?.Status, opening = openingStatus };
     public object InspectWindows() { var owned = OwnedWindows(); return new { discovery = windowDiscovery, ownershipError, windows = owned.Select(WindowFocus.Inspect).ToArray() }; }
     public Func<bool>? ControllerReleased { get; set; }
     public Action? ResetInput { get; set; }
+    public Action<string>? FocusIssue { get; set; }
     public bool AcceptsControllerInput => Visible && Focused && !opening && !closing;
     public bool Visible => window != 0 && IsWindow(window) && IsWindowVisible(window);
     public bool Focused => Visible && GetForegroundWindow() == window && WindowFocus.HasInputFocus(window);
@@ -133,6 +137,9 @@ public sealed class DesktopLauncher(int port, string directory, Func<nint>? game
     }
     async Task Present()
     {
+        openingWatch?.Cancel();
+        var watch = openingWatch = new CancellationTokenSource();
+        GetWindowThreadProcessId(previous, out uint previousPid);
         opening = true; ResetInput?.Invoke();
         try {
             if (native == null) { ShowWindowAsync(window, 9); await Task.Delay(150); }
@@ -145,15 +152,77 @@ public sealed class DesktopLauncher(int port, string directory, Func<nint>? game
             SetWindowPos(window, -1, bounds.X, bounds.Y, bounds.Width, bounds.Height, native == null ? 0x4060u : 0x4020u);
             }
             if (native != null) await native.Show();
-            for (int i = 0; i < 15; i++) {
-                if (Focused) return;
-                if (i % 5 == 0) WindowFocus.ActivateInputWindow(window, true);
-                await Task.Delay(100);
+            WindowFocus.ActivateInputWindow(window, true);
+            if (native != null) await native.FocusInput();
+            // O marco de entrada pertence à janela já apresentada. Criar/mostrar
+            // o WebView pode atualizar a entrada antes desta entrega inicial.
+            var guard = new LauncherOpeningFocus(Environment.TickCount64, WindowFocus.InputStamp());
+            while (true) {
+                var action = await CheckOpeningFocus(guard, previousPid, watch.Token);
+                if (action == LauncherFocusAction.Cancel) { if (!Focused) await HideUnfocused(); return; }
+                if (action == LauncherFocusAction.Fail) break;
+                if (guard.Ready || action == LauncherFocusAction.Finish) {
+                    _ = WatchOpeningFocus(guard, previousPid, watch.Token);
+                    return;
+                }
+                await Task.Delay(50);
             }
             // Não deixar um painel aparentemente navegável com o jogo em foreground.
             if (native != null) await native.Hide(); else ShowWindowAsync(window, 0);
             throw new InvalidOperationException("Não foi possível focar o painel. Tente abri-lo novamente.");
         } finally { opening = false; }
+    }
+    async Task HideUnfocused() {
+        ResetInput?.Invoke();
+        if (native != null) await native.Hide(); else ShowWindowAsync(window, 0);
+    }
+    async Task<LauncherFocusAction> CheckOpeningFocus(LauncherOpeningFocus guard, uint previousPid, CancellationToken cancel) {
+        cancel.ThrowIfCancellationRequested();
+        var foreground = GetForegroundWindow();
+        GetWindowThreadProcessId(foreground, out uint foregroundPid);
+        bool related = foreground == window || foreground == 0 || previousPid != 0 && foregroundPid == previousPid;
+        var action = guard.Update(Environment.TickCount64, Focused, WindowFocus.InputStamp(), related);
+        if (action == LauncherFocusAction.Repair) {
+            ResetInput?.Invoke();
+            WindowFocus.ActivateInputWindow(window, true);
+            if (native != null) await native.FocusInput();
+        }
+        var phase = action.ToString();
+        var status = new { phase, focused = Focused, repairs = guard.Repairs, relatedForeground = related, inputChanged = guard.InputChanged };
+        openingStatus = status;
+        var diagnostic = System.Text.Json.JsonSerializer.Serialize(status);
+        try { if (diagnostic != lastOpeningDiagnostic) { File.WriteAllText(Path.Combine(directory, "launcher-opening.json"), diagnostic); lastOpeningDiagnostic = diagnostic; } }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        return action;
+    }
+    async Task WatchOpeningFocus(LauncherOpeningFocus guard, uint previousPid, CancellationToken cancel) {
+        try {
+            while (true) {
+                await Task.Delay(100, cancel);
+                if (!await toggleGate.WaitAsync(0, cancel)) continue;
+                try {
+                    if (!Visible) return;
+                    var action = await CheckOpeningFocus(guard, previousPid, cancel);
+                    if (action == LauncherFocusAction.Cancel) { if (!Focused) await HideUnfocused(); return; }
+                    if (action == LauncherFocusAction.Finish) return;
+                    if (action == LauncherFocusAction.Fail) {
+                        await HideUnfocused();
+                        FocusIssue?.Invoke("O painel não manteve o foco. Tente abri-lo novamente."); return;
+                    }
+                } finally { toggleGate.Release(); }
+            }
+        } catch (OperationCanceledException) { }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
+            try {
+                await toggleGate.WaitAsync(cancel);
+                try {
+                    cancel.ThrowIfCancellationRequested();
+                    if (Visible) await HideUnfocused();
+                    FocusIssue?.Invoke("Não foi possível confirmar o foco do painel.");
+                } finally { toggleGate.Release(); }
+            } catch (OperationCanceledException) { }
+            catch (InvalidOperationException) { }
+        }
     }
     public void AlignToTv() {
         using var dpi = WindowFocus.PhysicalCoordinates();
@@ -182,13 +251,14 @@ public sealed class DesktopLauncher(int port, string directory, Func<nint>? game
     [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] static extern nint GetWindowLongPtr(nint window, int index);
     [DllImport("user32.dll", EntryPoint="SetWindowLongPtrW")] static extern nint SetWindowLongPtr(nint window, int index, nint value);
     [DllImport("user32.dll")] static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
-    public void Close() { native?.Dispose(); foreach (var owned in OwnedWindows()) PostMessage(owned, 0x10, 0, 0); }
+    public void Close() { openingWatch?.Cancel(); native?.Dispose(); foreach (var owned in OwnedWindows()) PostMessage(owned, 0x10, 0, 0); }
     [DllImport("user32.dll")] static extern bool PostMessage(nint window, uint message, nint w, nint l);
     public async Task Hide(bool waitForController = true) {
         await toggleGate.WaitAsync();
         try { await HideCore(waitForController); } finally { toggleGate.Release(); }
     }
     async Task HideCore(bool waitForController = true) {
+        openingWatch?.Cancel();
         if (window == 0 || !IsWindow(window) || !Visible) return;
         closing = true; ResetInput?.Invoke();
         try {
@@ -222,6 +292,8 @@ public sealed class DesktopLauncher(int port, string directory, Func<nint>? game
 
 public static class WindowFocus
 {
+    public static bool IsForeground(nint window) => window != 0 && GetForegroundWindow() == window;
+    public static bool CanPresent(nint window) => window != 0 && IsWindowVisible(window) && !IsIconic(window);
     public static bool BelongsTo(nint window, int pid) {
         if (window == 0) return false;
         GetWindowThreadProcessId(window, out uint owner);
@@ -231,7 +303,9 @@ public static class WindowFocus
         if (IsIconic(window)) ShowWindowAsync(window, 4); // SW_SHOWNOACTIVATE: conserva o menu.
     }
     public static bool PlaceOnTv(nint window) {
-        if (window == 0) return false;
+        // Não redimensionar uma janela ainda minimizada; aguardar a restauração
+        // assíncrona antes de conferir retângulo/foco.
+        if (window == 0 || !IsWindowVisible(window) || IsIconic(window)) return false;
         using var dpi = PhysicalCoordinates();
         if (!Displays.TvReady(false)) throw new InvalidOperationException("A TV de destino não está disponível.");
         var bounds = Displays.TvBounds();
@@ -267,7 +341,8 @@ public static class WindowFocus
     public static object Inspect(nint window) {
         using var dpi = PhysicalCoordinates();
         GetWindowRect(window, out var rect);
-        return new { window = (long)window, foreground = GetForegroundWindow() == window, inputFocused = HasInputFocus(window), left = rect.Left, top = rect.Top, width = rect.Right - rect.Left, height = rect.Bottom - rect.Top };
+        var foreground = GetForegroundWindow(); GetWindowThreadProcessId(foreground, out var foregroundPid);
+        return new { window = (long)window, foreground = foreground == window, inputFocused = HasInputFocus(window), visible = IsWindowVisible(window), minimized = IsIconic(window), foregroundPid, left = rect.Left, top = rect.Top, width = rect.Right - rect.Left, height = rect.Bottom - rect.Top };
     }
     public static GamePlacement KeepGamePlacement(Func<nint>? gameWindow) => new GamePlacement(gameWindow);
     public sealed class GamePlacement : IDisposable {
@@ -307,6 +382,7 @@ public static class WindowFocus
     }
     [StructLayout(LayoutKind.Sequential)] struct LastInputInfo { public uint Size, Time; }
     static uint LastInput() { var info = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() }; return GetLastInputInfo(ref info) ? info.Time : uint.MaxValue; }
+    public static uint InputStamp() => LastInput();
     [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LastInputInfo info);
     public static bool Activate(nint window)
     {
@@ -325,21 +401,35 @@ public static class WindowFocus
     public static bool ActivateGame(nint window) => ActivateInputWindow(window);
     public static bool ActivateInputWindow(nint window, bool panel = false) {
         if (window == 0) return false;
-        // Conferir foco já entregue sem reanexar filas a cada tick.
-        // AttachThreadInput reinicializa o estado de teclas da thread destino.
-        if (window != 0 && GetForegroundWindow() == window && HasInputFocus(window)) return true;
-        if (!Activate(window) && !panel) return false;
-        PeekMessage(out _, 0, 0, 0, 0); // Garante fila de mensagens na thread do auxiliar.
-        // Foreground não comprova foco de entrada. Jogo conserva a fila destino;
-        // painel também usa temporariamente a fila foreground. Não chamar
-        // ShowWindow síncrono durante a conexão, nem simular clique/botão.
-        var caller = GetCurrentThreadId(); var target = GetWindowThreadProcessId(window, out _);
-        var foreground = GetWindowThreadProcessId(GetForegroundWindow(), out _);
-        bool joinedForeground = panel && foreground != 0 && foreground != caller && foreground != target && AttachThreadInput(caller, foreground, true);
-        bool attached = target != 0 && target != caller && AttachThreadInput(caller, target, true);
-        try { SetForegroundWindow(window); SetActiveWindow(window); SetFocus(window); }
-        finally { if (attached) AttachThreadInput(caller, target, false); if (joinedForeground) AttachThreadInput(caller, foreground, false); }
-        return GetForegroundWindow() == window && HasInputFocus(window);
+        if (IsIconic(window)) {
+            ShowWindowAsync(window, 9);
+            // Espera curta fora de AttachThreadInput; não bloquear a thread da janela.
+            for (int attempt = 0; attempt < 10 && IsIconic(window); attempt++) Thread.Sleep(25);
+            if (IsIconic(window)) return false;
+        }
+        return InputFocusHandoff.Try(
+            () => InputFocusHandoff.Ready(IsWindowVisible(window), IsIconic(window), GetForegroundWindow() == window, HasInputFocus(window)),
+            () => Activate(window),
+            () => new FocusInputQueues(window),
+            () => { SetForegroundWindow(window); SetActiveWindow(window); SetFocus(window); });
+    }
+    sealed class FocusInputQueues : IDisposable {
+        readonly uint caller, target, foreground;
+        readonly bool joinedForeground, joinedTarget;
+        public FocusInputQueues(nint window) {
+            PeekMessage(out _, 0, 0, 0, 0);
+            caller = GetCurrentThreadId(); target = GetWindowThreadProcessId(window, out _);
+            foreground = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+            // Conectar foreground e destino também para jogos: o primeiro
+            // SetForegroundWindow pode ser recusado ao iniciar pela TV.
+            // Nenhum clique/tecla ou ShowWindow síncrono durante a conexão.
+            joinedForeground = foreground != 0 && foreground != caller && foreground != target && AttachThreadInput(caller, foreground, true);
+            joinedTarget = target != 0 && target != caller && AttachThreadInput(caller, target, true);
+        }
+        public void Dispose() {
+            if (joinedTarget) AttachThreadInput(caller, target, false);
+            if (joinedForeground) AttachThreadInput(caller, foreground, false);
+        }
     }
     public static bool HasInputFocus(nint window) {
         if (window == 0) return false;
@@ -377,6 +467,7 @@ public static class WindowFocus
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(nint window);
     [DllImport("user32.dll")] static extern bool BringWindowToTop(nint window);
     [DllImport("user32.dll")] static extern bool IsIconic(nint window);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(nint window);
     [DllImport("user32.dll")] static extern bool ShowWindow(nint window, int command);
     [DllImport("user32.dll")] static extern bool ShowWindowAsync(nint window, int command);
 }

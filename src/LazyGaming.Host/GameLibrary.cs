@@ -43,7 +43,8 @@ public sealed class GameLibrary
         return ChooseSteam([user?.GetValue("SteamPath") as string, machine?.GetValue("InstallPath") as string, machine64?.GetValue("InstallPath") as string, fallback]) ?? fallback;
     }
     static string Compact(string text) => Regex.Replace(text.ToLowerInvariant(), "[^a-z0-9]", "");
-    public static bool IsHelper(string name) => Regex.IsMatch(name, "crash|unins|setup|install|server|anticheat|redist|dxsetup|webhelper|unitycrash|vc_redist", RegexOptions.IgnoreCase);
+    public static bool IsHelper(string name) => Regex.IsMatch(name, "crash|unins|setup|install|server|anticheat|redist|dxsetup|webhelper|unitycrash|vc_redist|_xlate(?:\\.exe)?$|shader.*compil", RegexOptions.IgnoreCase);
+    public static string LocalId(string folder) => "local-" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant())))[..12];
     public static string IdentifyLocalTitle(string folder, string executable)
     {
         var name = Path.GetFileNameWithoutExtension(executable);
@@ -145,6 +146,10 @@ public sealed class GameLibrary
                 executable ?? "", true, item.Id.ToString(), item.Folder, argument));
         }
         // Não Steam: identificação local pelo executável/pasta; identidade de arte independente do launcher.
+        foreach (var registered in new LocalGameStore(Directory).Read(notes)) {
+            if (games.Any(g => string.Equals(g.Folder, registered.Folder, StringComparison.OrdinalIgnoreCase) || string.Equals(g.ProcessPath, registered.ProcessPath, StringComparison.OrdinalIgnoreCase))) continue;
+            games.Add(registered);
+        }
         var roots = localFolders.Where(System.IO.Directory.Exists).SelectMany(root => scanChildren ? System.IO.Directory.EnumerateDirectories(root) : [root]);
         foreach (var folder in roots.Where(root => (File.GetAttributes(root) & FileAttributes.ReparsePoint) == 0))
         {
@@ -157,7 +162,7 @@ public sealed class GameLibrary
             if (process.EndsWith("-Shipping.exe", StringComparison.OrdinalIgnoreCase)) title = Path.GetFileName(folder);
             var rootLauncher = Path.Combine(folder, Path.GetFileName(folder) + ".exe");
             bool mycopunk = Compact(title) == "mycopunk";
-            var id = mycopunk ? "mycopunk" : "local-" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(folder).ToLowerInvariant())))[..12];
+            var id = mycopunk ? "mycopunk" : LocalId(folder);
             var rootExes = candidates.Where(p => string.Equals(Path.GetDirectoryName(p), folder, StringComparison.OrdinalIgnoreCase)).ToArray();
             var launch = File.Exists(rootLauncher) ? rootLauncher : rootExes.Length == 1 ? rootExes[0] : process;
             games.Add(new(id, title, launch, process, false, mycopunk ? "3247750" : null, folder,

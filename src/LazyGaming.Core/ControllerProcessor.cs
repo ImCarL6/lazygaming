@@ -16,14 +16,19 @@ public sealed class ControllerProcessor
     readonly MenuNavigationGate menuGate = new();
     bool padPressed;
     public bool Enabled { get; private set; }
+    public bool NavigationArmed => menuGate.Armed;
     public bool Released(long now) => neutral.Ready(now);
+    public void ResetNavigation(long now)
+    {
+        menuGate.Update(false, false);
+        navigation.Update((ControllerState?)null, now, false);
+    }
 
     public void Reset(long now)
     {
         Enabled = false; padPressed = false;
         shortcut.Reset(); doubleTap.Reset(); gesture.Reset(); launcherHold = new();
-        neutral.Observe(false, now); menuGate.Update(false, false);
-        navigation.Update((ControllerState?)null, now, false);
+        neutral.Observe(false, now); ResetNavigation(now);
     }
 
     public ControllerOutput Process(ControllerState? state, long now, bool sessionActive, bool focusedPanel)

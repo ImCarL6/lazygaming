@@ -7,7 +7,9 @@ using System.Text.RegularExpressions;
 namespace LazyGaming;
 
 public record CatalogMatch(string Id, string Name, string? Image = null);
-public record GameMetadata(string StoreId, string Title, int? Year, string[] Developers, string[] Genres, string SourceUrl, DateTime CheckedAt);
+public record LocalArtwork(string Cover, string Backdrop, string CoverSourceUrl, string BackdropSourceUrl);
+public record GameMetadata(string? StoreId, string Title, int? Year, string[] Developers, string[] Genres, string SourceUrl, DateTime CheckedAt,
+    string Source = "steam", string? Description = null, string? Language = null, LocalArtwork? Artwork = null);
 public record GameCustomization(string? Name = null, GameMetadata? Metadata = null, bool Manual = false, DateTime AttemptedAt = default);
 
 // Identidade pública e apresentação nunca autorizam abrir/fechar um processo.
@@ -26,9 +28,9 @@ public sealed class GameMetadataStore
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { }
     }
     public GameCustomization Customization(Game game) { lock (sync) return entries.GetValueOrDefault(game.Id) ?? new(); }
-    public GameMetadata? For(Game game) => Customization(game).Metadata;
-    public string DisplayName(Game game) { var item = Customization(game); return item.Name ?? item.Metadata?.Title ?? game.Name; }
-    public string? ArtworkId(Game game) => For(game)?.StoreId ?? game.ArtworkId;
+    public GameMetadata? For(Game game) => game.LocalMetadata ?? Customization(game).Metadata;
+    public string DisplayName(Game game) => Customization(game).Name ?? For(game)?.Title ?? game.Name;
+    public string? ArtworkId(Game game) => For(game)?.Source == "local" ? game.Id : For(game)?.StoreId ?? game.ArtworkId;
     void Save(string id, GameCustomization item)
     {
         lock (sync) {
@@ -103,6 +105,7 @@ public sealed class GameMetadataStore
     }
     public async Task Assign(Game game, string id)
     {
+        if (game.LocalMetadata != null) throw new InvalidOperationException("Este jogo usa uma ficha local. O nome na biblioteca pode ser personalizado.");
         await updates.WaitAsync();
         try {
             GameMetadata? metadata;
@@ -118,6 +121,10 @@ public sealed class GameMetadataStore
         try {
             foreach (var game in games.ToArray()) {
                 var saved = Customization(game);
+                if (game.LocalMetadata is GameMetadata local) {
+                    if (saved.Metadata != local) lock (sync) Save(game.Id, Customization(game) with { Metadata = local, AttemptedAt = DateTime.UtcNow });
+                    continue;
+                }
                 if (saved.Manual || (!(retryMissing && saved.Metadata == null) && DateTime.UtcNow - saved.AttemptedAt < TimeSpan.FromHours(saved.Metadata == null ? 24 : 168))) continue;
                 try {
                     GameMetadata? metadata = null;

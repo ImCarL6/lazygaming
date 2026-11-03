@@ -3,7 +3,8 @@ namespace LazyGaming;
 // Abertura espera soltura inicial; depois permite navegação normal, inclusive hold.
 public sealed class MenuNavigationGate
 {
-    bool armed;
+    volatile bool armed;
+    public bool Armed => armed;
     public bool Update(bool focusedPanel, bool released) {
         if (!focusedPanel) { armed = false; return false; }
         if (!armed && released) armed = true;

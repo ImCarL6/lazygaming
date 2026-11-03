@@ -1,6 +1,13 @@
 using LazyGaming;
 
 if (args.Contains("--process-lifetime-fixture")) { await Task.Delay(1000); Environment.Exit(259); return; }
+if (args.Contains("--runtime-identity-fixture")) { await Task.Delay(30000); return; }
+if (args.Contains("--verify-runtime-identity")) { RuntimeIdentityTests.Run(); return; }
+if (args.Length == 3 && args[0] == "--monitor-preference-fixture") {
+    new TvSession(args[1], new FakeOutput()).SetMonitors(bool.Parse(args[2]));
+    Console.WriteLine("saved"); Console.Out.Flush();
+    await Task.Delay(Timeout.Infinite); return;
+}
 
 static void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
 var inactiveTv = new Displays.Screen("SAMSUNG", "physical-tv", 5, true, false, 3840, 2160, 60);
@@ -12,11 +19,17 @@ try { Presentation.Validate("stream"); } catch (InvalidOperationException) { str
 Assert(streamRejected, "Stream não configurado é rejeitado antes de preparar sessão");
 Presentation.Validate("cable");
 DisplayProfileTests.Run();
+await DisplayPreferenceTests.Run();
 StreamingTests.Run();
 PairingRecoveryTests.Run();
+RuntimeIdentityTests.Run();
 ControllerMenuTests.Run();
+InputFocusHandoffTests.Run();
+LauncherOpeningFocusTests.Run();
+TaskbarOverflowTests.Run();
 NativeDesktopTests.Run();
 await LibraryMetadataTests.Run();
+await LocalGameTests.Run();
 await LaunchIsolationTests.Run();
 await ProcessExitTests.Run();
 using (var dormantBackground = new GameBackground(() => throw new Exception("launcher oculto não consulta jogo"), () => false)) {
@@ -241,7 +254,7 @@ sealed class FakeOutput : ISessionPlatform
     public List<AudioDevice> Audio = [new("speaker", "EDIFIER", true)];
     public List<string> Selected = [];
     public void ValidateTv() { }
-    public void PrepareDesktop(Displays.Snapshot original) { ConfigureMonitors(original, true); Prepared = true; }
+    public void PrepareDesktop(Displays.Snapshot original) { if (Fail) throw new InvalidOperationException("tela indisponível"); ConfigureMonitors(original, true); Prepared = true; }
     public Displays.Snapshot CaptureDisplays() => new([], []);
     public void PrepareTv() { if (Fail) throw new InvalidOperationException("tela indisponível"); Prepared = true; }
     public bool TvReady() => Prepared;

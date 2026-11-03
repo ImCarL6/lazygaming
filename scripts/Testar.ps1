@@ -16,7 +16,13 @@ try {
         node $test.FullName
         if ($LASTEXITCODE -ne 0) { throw "Falha em $($test.Name)" }
     }
-    python tests/moonlight-adaptation.py
-    if ($LASTEXITCODE -ne 0) { throw 'Falha na adaptação Moonlight.' }
+    foreach ($test in Get-ChildItem tests -Filter '*.py' | Sort-Object Name) {
+        python $test.FullName
+        if ($LASTEXITCODE -ne 0) { throw "Falha em $($test.Name)" }
+    }
+    foreach ($test in Get-ChildItem tests -Filter '*.ps1' | Sort-Object Name) {
+        powershell -NoProfile -File $test.FullName
+        if ($LASTEXITCODE -ne 0) { throw "Falha em $($test.Name)" }
+    }
     Write-Output 'PASS: build e testes isolados; nenhum teste físico de TV ou gameplay foi executado.'
 } finally { Pop-Location }

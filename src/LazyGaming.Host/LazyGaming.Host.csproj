@@ -4,9 +4,10 @@
     <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.15.0</Version>
+    <Version>0.15.2</Version>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
+  <ItemGroup><FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" /></ItemGroup>
   <ItemGroup><Content Include="..\..\tv\**\*" Link="wwwroot\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
   <ItemGroup><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3856.49" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../LazyGaming.Platform.Windows/LazyGaming.Platform.Windows.csproj" /></ItemGroup>
