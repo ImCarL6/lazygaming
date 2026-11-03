@@ -40,7 +40,11 @@ static class HubLibraryTests
             Check(store.Read([]).Count() == 2, "cadastro ausente recupera reserva");
             File.Delete(secondExe);
             var inspect = JsonSerializer.SerializeToElement(store.Inspect());
-            Check(inspect.GetArrayLength() == 2 && !inspect[1].GetProperty("available").GetBoolean(), "jogo indisponível permanece visível no gerenciador com motivo");
+            var unavailable = inspect.EnumerateArray().Single(entry => entry.GetProperty("executable").GetString() == secondExe);
+            var available = inspect.EnumerateArray().Single(entry => entry.GetProperty("executable").GetString() == exe);
+            Check(inspect.GetArrayLength() == 2 && !unavailable.GetProperty("available").GetBoolean()
+                && !string.IsNullOrWhiteSpace(unavailable.GetProperty("reason").GetString())
+                && available.GetProperty("available").GetBoolean(), "jogo indisponível permanece visível no gerenciador com motivo, independentemente da ordem das importações concorrentes");
             var platform = new SimulatedGames();
             var service = new GameService(library, platform, new SimulatedEnvironment());
             var hub = new PcHub(library, service, () => Task.CompletedTask);
