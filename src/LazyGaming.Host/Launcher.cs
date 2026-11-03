@@ -292,6 +292,11 @@ public sealed class DesktopLauncher(int port, string directory, Func<nint>? game
 
 public static class WindowFocus
 {
+    public static int DpiAwareness(nint window) => GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(window));
+    public static uint WindowDpi(nint window) => GetDpiForWindow(window);
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(nint window);
+    [DllImport("user32.dll")] static extern nint GetWindowDpiAwarenessContext(nint window);
+    [DllImport("user32.dll")] static extern int GetAwarenessFromDpiAwarenessContext(nint context);
     public static bool IsForeground(nint window) => window != 0 && GetForegroundWindow() == window;
     public static bool CanPresent(nint window) => window != 0 && IsWindowVisible(window) && !IsIconic(window);
     public static bool BelongsTo(nint window, int pid) {
@@ -457,7 +462,7 @@ public static class WindowFocus
     {
             foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(game.ProcessPath)))
                 using (process) { if (string.Equals(ProcessImage.PathOf(process.Id), game.ProcessPath, StringComparison.OrdinalIgnoreCase) &&
-                    (game.ProcessArgument == null || WindowsGames.RuntimeMatches(process.Id, game.ProcessArgument)) && process.MainWindowHandle != 0) return process.MainWindowHandle; }
+                    LaunchChoices.Contents(game).Any(content => content == null || WindowsGames.RuntimeMatches(process.Id, content)) && process.MainWindowHandle != 0) return process.MainWindowHandle; }
         return 0;
     }
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();

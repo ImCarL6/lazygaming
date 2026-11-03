@@ -8,6 +8,9 @@ namespace LazyGaming;
 public sealed class GameLibrary
 {
     public List<Game> Games { get; private set; } = [];
+    public List<Game> Discovered { get; private set; } = [];
+    public DateTime? LastScan { get; private set; }
+    public LibrarySettings Settings { get; }
     public string SteamPath { get; }
     public string Directory { get; }
     public List<string> Notes { get; private set; } = [];
@@ -19,6 +22,7 @@ public sealed class GameLibrary
     {
         Directory = directory;
         Metadata = new(directory);
+        Settings = new(directory);
         // Um filho por instalação; reavaliado a cada busca para descobrir jogos novos.
         localFolders = nonSteamFolders?.ToArray() ?? [@"C:\Joguetes"];
         scanChildren = nonSteamFolders == null || discoverChildren;
@@ -89,6 +93,7 @@ public sealed class GameLibrary
     }
     public void Refresh()
     {
+        var preferences = Settings.Read();
         var notes = new List<string>(); var installed = new List<(uint Id, string Name, string Folder)>();
         var libraries = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { SteamPath };
         var folders = Path.Combine(SteamPath, "steamapps", "libraryfolders.vdf");
@@ -120,6 +125,7 @@ public sealed class GameLibrary
         var games = new List<Game>();
         foreach (var item in installed)
         {
+            if (!preferences.Steam) continue;
             var data = info.GetValueOrDefault(item.Id) ?? new(); var common = data.Child("common");
             string type = common.Text("type");
             if (item.Id is 228980 or 431960 || (type != "" && !type.Equals("game", StringComparison.OrdinalIgnoreCase) && item.Id != 1281930))
@@ -150,13 +156,28 @@ public sealed class GameLibrary
             if (games.Any(g => string.Equals(g.Folder, registered.Folder, StringComparison.OrdinalIgnoreCase) || string.Equals(g.ProcessPath, registered.ProcessPath, StringComparison.OrdinalIgnoreCase))) continue;
             games.Add(registered);
         }
-        var roots = localFolders.Where(System.IO.Directory.Exists).SelectMany(root => scanChildren ? System.IO.Directory.EnumerateDirectories(root) : [root]);
+        IEnumerable<string> Folders() {
+            var configured = scanChildren ? preferences.Folders.Where(f => f.Enabled).Select(f => f.Path).Concat(localFolders.Where(p => p != @"C:\Joguetes")) : localFolders;
+            foreach (var root in configured.Distinct(StringComparer.OrdinalIgnoreCase)) {
+                if (!System.IO.Directory.Exists(root)) { notes.Add("Pasta de busca indisponível: " + root); continue; }
+                string[] children;
+                try { children = scanChildren ? System.IO.Directory.EnumerateDirectories(root).Where(p => (File.GetAttributes(p) & FileAttributes.ReparsePoint) == 0).ToArray() : [root]; }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { notes.Add("Não foi possível ler a pasta de busca: " + root); continue; }
+                // Include the chosen folder itself when it is an installation.
+                if (scanChildren && System.IO.Directory.EnumerateFiles(root, "*.exe").Any(p => !IsHelper(Path.GetFileName(p)))) yield return root;
+                foreach (var child in children) yield return child;
+            }
+        }
+        var roots = Folders();
         foreach (var folder in roots.Where(root => (File.GetAttributes(root) & FileAttributes.ReparsePoint) == 0))
         {
-            if (games.Any(g => string.Equals(g.Folder, folder, StringComparison.OrdinalIgnoreCase))) continue;
+            if (Regex.IsMatch(Path.GetFileName(folder), "setup|installer|redist|prodkeys", RegexOptions.IgnoreCase)) continue;
+            if (games.Any(g => string.Equals(g.Folder, Path.TrimEndingDirectorySeparator(folder), StringComparison.OrdinalIgnoreCase)
+                || g.Folder != null && folder.StartsWith(g.Folder.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))) continue;
             var candidates = Exes(folder);
             var process = SelectLocalProcess(folder, candidates);
-            if (process == null) continue;
+            if (process == null) { notes.Add(Path.GetFileName(folder) + ": nenhum executável de jogo identificado"); continue; }
+            if (games.Any(g => string.Equals(g.ProcessPath, process, StringComparison.OrdinalIgnoreCase))) continue;
             var title = IdentifyLocalTitle(folder, process);
             // Nome curto de projeto Unreal não substitui o título da instalação.
             if (process.EndsWith("-Shipping.exe", StringComparison.OrdinalIgnoreCase)) title = Path.GetFileName(folder);
@@ -168,7 +189,9 @@ public sealed class GameLibrary
             games.Add(new(id, title, launch, process, false, mycopunk ? "3247750" : null, folder,
                 LaunchDirectory: mycopunk ? null : Path.GetDirectoryName(launch)));
         }
-        Games = games.GroupBy(g => g.Id).Select(g => g.First()).OrderBy(g => g.Id == "wilds" ? 0 : g.Id == "mycopunk" ? 1 : 2).ThenBy(g => g.Name).ToList();
+        Discovered = games.GroupBy(g => g.Id).Select(g => g.First()).OrderBy(g => g.Id == "wilds" ? 0 : g.Id == "mycopunk" ? 1 : 2).ThenBy(g => g.Name).ToList();
+        Games = Discovered.Where(g => !(preferences.Excluded ?? []).Contains(g.Id)).ToList();
+        LastScan = DateTime.UtcNow;
         Notes = notes.Distinct().ToList();
     }
     public static string? SelectLocalProcess(string folder, IEnumerable<string> candidates) => candidates

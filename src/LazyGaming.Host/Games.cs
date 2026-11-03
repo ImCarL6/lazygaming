@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace LazyGaming;
 
-public record Game(string Id, string Name, string Launch, string ProcessPath, bool Steam = false, string? ArtworkId = null, string? Folder = null, string? ProcessArgument = null, string? LaunchDirectory = null, GameMetadata? LocalMetadata = null, string[]? LaunchArguments = null);
+public record Game(string Id, string Name, string Launch, string ProcessPath, bool Steam = false, string? ArtworkId = null, string? Folder = null, string? ProcessArgument = null, string? LaunchDirectory = null, GameMetadata? LocalMetadata = null, string[]? LaunchArguments = null, LaunchChoice[]? Choices = null, string? ChoiceLabel = null);
 public record Running(int Pid, string Path, string? Argument = null);
 public interface IGamePlatform
 {
@@ -93,10 +93,10 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
                 if (observed.Exited) continue;
                 if (observed.Image is string path)
                 {
-                    var game = library.Games.FirstOrDefault(g => string.Equals(g.ProcessPath, path, StringComparison.OrdinalIgnoreCase));
-                    if (game == null) continue;
-                    if (game.ProcessArgument != null && !RuntimeMatches(p.Id, game.ProcessArgument)) continue;
-                    result.Add(new(p.Id, path, game.ProcessArgument));
+                    var candidates = library.Games.Where(g => string.Equals(g.ProcessPath, path, StringComparison.OrdinalIgnoreCase));
+                    var content = candidates.SelectMany(LaunchChoices.Contents).FirstOrDefault(argument => argument == null || RuntimeMatches(p.Id, argument));
+                    if (content == null && !candidates.Any(g => LaunchChoices.Contents(g).Contains(null))) continue;
+                    result.Add(new(p.Id, path, content));
                 } else {
                     IdentificationError(p.Id, candidate.Name, observed.Error);
                     throw new InvalidOperationException("O Windows não permitiu confirmar a identidade de um jogo ainda em execução. Aguarde alguns segundos e tente novamente.");
@@ -242,9 +242,11 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
 
 public sealed class GameService(GameLibrary library, IGamePlatform platform, IGameEnvironment environment)
 {
+    readonly LaunchPreferenceStore preferences = new(library.Directory);
     IReadOnlyList<Game> catalog => library.Games;
     readonly SemaphoreSlim gate = new(1, 1);
     string? starting;
+    string? startingChoice;
     DateTime deadline;
     DateTime? idleSince;
     DateTime switchUntil;
@@ -252,7 +254,7 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
     void ExpireOpening(IReadOnlyList<Running> running) {
         if (starting == null || deadline > DateTime.UtcNow) return;
         var game = catalog.Single(g => g.Id == starting);
-        if (!running.Any(p => Same(p.Path, game.ProcessPath))) {
+        if (!running.Any(p => LaunchChoices.Matches(game, p))) {
             openingError = "O jogo não abriu no tempo esperado. Confira e feche qualquer aviso do Steam antes de tentar novamente.";
             platform.CancelTarget(game);
         }
@@ -269,16 +271,17 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
         await gate.WaitAsync();
         try {
             var processes = platform.Processes();
-            var running = catalog.Where(g => processes.Any(p => Same(p.Path, g.ProcessPath) && (g.ProcessArgument == null || p.Argument == g.ProcessArgument))).ToArray();
-            if (running.Length == 1) { environment.ReconfirmDesktop(); platform.TargetDisplay(running[0]); }
+            var running = catalog.Where(g => processes.Any(p => LaunchChoices.Matches(g, p))).ToArray();
+            if (running.Length == 1) { environment.ReconfirmDesktop(); platform.TargetDisplay(LaunchChoices.ForProcess(running[0], processes.First(p => LaunchChoices.Matches(running[0], p)))); }
         } finally { gate.Release(); }
     }
-    public async Task Rescan()
+    public async Task Rescan(Action? change = null)
     {
         await gate.WaitAsync();
         try
         {
             if (starting != null || platform.Processes().Count > 0) throw new InvalidOperationException("Encerre o jogo antes de atualizar a biblioteca.");
+            change?.Invoke();
             library.Refresh();
         }
         finally { gate.Release(); }
@@ -291,24 +294,25 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
         try {
         var running = platform.Processes();
         ExpireOpening(running);
-        if (starting != null && running.Any(p => Same(p.Path, catalog.Single(g => g.Id == starting).ProcessPath))) starting = null;
+        if (starting != null && running.Any(p => LaunchChoices.Matches(catalog.Single(g => g.Id == starting), p))) starting = null;
         return new { environment = environment.Status, games = catalog.Select(g => new { g.Id, name = library.Metadata.DisplayName(g), origin = g.Steam ? "Steam" : "PC", artworkId = library.Metadata.ArtworkId(g), releaseYear = library.Metadata.For(g)?.Year,
-            available = File.Exists(g.ProcessPath),
-            running = running.Any(p => Same(p.Path, g.ProcessPath)),
+            available = File.Exists(g.ProcessPath) && (g.Choices == null || g.Choices.Any(v => File.Exists(v.ContentPath))),
+            choiceLabel = g.ChoiceLabel, selectedChoice = preferences.Get(g),
+            choices = g.Choices?.Select(v => new { v.Id, v.Name, available = File.Exists(v.ContentPath) }).ToArray(),
+            runningChoice = g.Choices?.FirstOrDefault(v => running.Any(p => LaunchChoices.Matches(g, p) && string.Equals(p.Argument, v.ContentPath, StringComparison.OrdinalIgnoreCase)))?.Id,
+            running = running.Any(p => LaunchChoices.Matches(g, p)),
             starting = starting == g.Id && deadline > DateTime.UtcNow }).ToArray(),
             startError = openingError ?? platform.DisplayError ?? (starting != null && deadline <= DateTime.UtcNow &&
-                !running.Any(p => Same(p.Path, catalog.Single(g => g.Id == starting).ProcessPath))
+                !running.Any(p => LaunchChoices.Matches(catalog.Single(g => g.Id == starting), p))
                 ? "O jogo não abriu no tempo esperado. Confira o launcher no PC antes de tentar novamente." : null) };
         } finally { gate.Release(); }
     }
-    static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
     public async Task MoveToTv(string id, CancellationToken cancellation = default)
     {
         await gate.WaitAsync(cancellation);
         try {
             var game = catalog.SingleOrDefault(g => g.Id == id) ?? throw new InvalidOperationException("Jogo desconhecido.");
-            var processes = platform.Processes().Where(p => Same(p.Path, game.ProcessPath) &&
-                (game.ProcessArgument == null || p.Argument == game.ProcessArgument)).ToArray();
+            var processes = platform.Processes().Where(p => LaunchChoices.Matches(game, p)).ToArray();
             if (processes.Length != 1) throw new InvalidOperationException(processes.Length == 0
                 ? "O jogo ainda não tem um processo identificado em execução. Aguarde a abertura e tente novamente."
                 : "Há mais de uma instância desse jogo. Não foi possível escolher a janela com segurança.");
@@ -321,7 +325,7 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
             idleSince = null;
         } finally { gate.Release(); }
     }
-    public async Task Start(string id, string mode = "cable")
+    public async Task Start(string id, string mode = "cable", string? choice = null)
     {
         await gate.WaitAsync();
         try
@@ -330,17 +334,27 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
             var processes = platform.Processes();
             ExpireOpening(processes);
             openingError = null;
-            if (processes.Any(p => Same(p.Path, game.ProcessPath))) { environment.Prepare(mode); platform.TargetDisplay(game); starting = null; idleSince = null; switchUntil = default; return; }
+            var active = processes.Where(p => LaunchChoices.Matches(game, p)).ToArray();
+            var selectedChoice = choice ?? preferences.Get(game);
+            if (active.Length > 0) {
+                if (choice != null && game.Choices?.Any(v => v.Id == choice) != true)
+                    throw new InvalidOperationException("Esta versão do jogo não está cadastrada.");
+                if (choice != null && !active.All(p => string.Equals(p.Argument, game.Choices!.Single(v => v.Id == choice).ContentPath, StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException("Encerre o jogo antes de trocar de versão.");
+                environment.Prepare(mode); platform.TargetDisplay(LaunchChoices.ForProcess(game, active[0])); starting = null; idleSince = null; switchUntil = default; return;
+            }
+            game = LaunchChoices.Select(game, selectedChoice);
             if (starting != null)
             {
                 if (deadline <= DateTime.UtcNow) throw new InvalidOperationException("A abertura anterior não foi confirmada. Cancele a abertura no launcher e reinicie o auxiliar antes de tentar novamente.");
                 if (starting == id) return; throw new InvalidOperationException("Aguarde o jogo que está abrindo.");
             }
-            if (catalog.Any(g => processes.Any(p => Same(p.Path, g.ProcessPath))))
+            if (catalog.Any(g => processes.Any(p => LaunchChoices.Matches(g, p))))
                 throw new InvalidOperationException("Encerre o jogo atual antes de abrir outro.");
             if (!File.Exists(game.ProcessPath)) throw new InvalidOperationException("Executável indisponível. Conclua a preparação do jogo.");
-            starting = id; deadline = DateTime.UtcNow.AddSeconds(90);
-            try { environment.Prepare(mode); platform.TargetDisplay(game); idleSince = null; platform.Launch(game, mode); switchUntil = default; }
+            starting = id; startingChoice = selectedChoice; deadline = DateTime.UtcNow.AddSeconds(90);
+            try { environment.Prepare(mode); platform.TargetDisplay(game); idleSince = null; platform.Launch(game, mode); switchUntil = default;
+                try { preferences.Save(game, selectedChoice); } catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) { /* A launched game must not be rolled back for an optional preference. */ } }
             catch { starting = null; switchUntil = default; environment.Restore(); throw; }
         }
         finally { gate.Release(); }
@@ -353,8 +367,8 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
             var processes = platform.Processes();
             ExpireOpening(processes);
             platform.PlaceWindows(processes);
-            bool running = catalog.Any(g => processes.Any(p => Same(p.Path, g.ProcessPath)));
-            if (starting != null && processes.Any(p => Same(p.Path, catalog.Single(g => g.Id == starting).ProcessPath))) starting = null;
+            bool running = catalog.Any(g => processes.Any(p => LaunchChoices.Matches(g, p)));
+            if (starting != null && processes.Any(p => LaunchChoices.Matches(catalog.Single(g => g.Id == starting), p))) starting = null;
             environment.Tick();
             if (DateTime.UtcNow < switchUntil) { idleSince = null; return; }
             if (running || starting != null) { idleSince = null; return; }
@@ -378,7 +392,7 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
                 if (state.TryGetProperty("mode", out var currentMode) && currentMode.GetString() != mode)
                     throw new InvalidOperationException("Para trocar de jogo nesta sessão, mantenha o mesmo modo Cabo/Stream.");
             }
-            var found = platform.Processes().Where(p => Same(p.Path, game.ProcessPath)).ToList();
+            var found = platform.Processes().Where(p => LaunchChoices.Matches(game, p)).ToList();
             if (found.Count == 0 && starting == id)
                 throw new InvalidOperationException("A abertura ainda não foi confirmada. Cancele pelo launcher no PC antes de reiniciar o auxiliar.");
             foreach (var p in found)
@@ -406,7 +420,7 @@ public sealed class SimulatedGames : IGamePlatform
     public bool CloseAccepted;
     public List<Running> Processes() => Active.ToList();
     public string? LastMode;
-    public void Launch(Game game, string mode = "cable") { LastMode = mode; LaunchCount++; Active.Add(new(1, game.ProcessPath)); }
+    public void Launch(Game game, string mode = "cable") { LastMode = mode; LaunchCount++; Active.Add(new(1, game.ProcessPath, game.ProcessArgument)); }
     public bool RequestClose(Running process) { if (CloseAccepted) Active.Remove(process); return CloseAccepted; }
     public void ForceClose(Running process) => Active.Remove(process);
 }

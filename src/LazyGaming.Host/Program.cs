@@ -4,8 +4,13 @@ using System.Net.Sockets;
 using System.Text.Json;
 using LazyGaming;
 
-if (args.Contains("--open-launcher"))
+// Deve preceder a primeira janela de feedback/WebView, inclusive em outras
+// threads. Evita virtualização de DPI ao levar o painel do monitor para a TV.
+System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+
+if (args.Contains("--open-launcher") || args.Contains("--open-hub"))
 {
+    bool openHub = args.Contains("--open-hub");
     try {
         var saved = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming", "pairing.json");
         using var stored = JsonDocument.Parse(File.ReadAllText(saved));
@@ -13,12 +18,19 @@ if (args.Contains("--open-launcher"))
         var time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
         var nonce = Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        using var request = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:47831/api/launcher/toggle");
+        var route = openHub ? "/api/hub/open" : "/api/launcher/toggle";
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:47831" + route);
         request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
         request.Headers.Add("X-LG-Time", time); request.Headers.Add("X-LG-Nonce", nonce);
-        request.Headers.Add("X-LG-Signature", Security.Sign($"POST\n/api/launcher/toggle\n{time}\n{nonce}\n{{}}", key));
+        request.Headers.Add("X-LG-Signature", Security.Sign($"POST\n{route}\n{time}\n{nonce}\n{{}}", key));
         using var response = await client.SendAsync(request);
-        if (response.IsSuccessStatusCode) return;
+        if (response.IsSuccessStatusCode) {
+            if (openHub) {
+                using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(result.RootElement.GetProperty("url").GetString()!) { UseShellExecute = true });
+            }
+            return;
+        }
         // Auxiliar vivo recusou a operação: não iniciar uma segunda instância
         // para tentar escapar da recusa de foco/autenticação.
         Console.Error.WriteLine("O auxiliar não conseguiu abrir o painel. Tente novamente.");
@@ -36,7 +48,7 @@ if (args.Contains("--open-launcher"))
             Environment.ExitCode = 1; return;
         }
     }
-    args = args.Concat(["--lan", "--launcher"]).ToArray();
+    args = args.Concat(["--lan", openHub ? "--hub" : "--launcher"]).ToArray();
 }
 if (args.Contains("--preview-feedback-on") || args.Contains("--preview-feedback-off"))
 {
@@ -166,6 +178,7 @@ builder.WebHost.ConfigureKestrel(k => { k.Limits.MaxRequestBodySize = 8192; k.Li
     if (lan) foreach (var a in lanAddresses) k.Listen(a.Address, port); });
 var data = test ? Path.Combine(Path.GetTempPath(), "lazygaming-test-" + port) : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming");
 var security = new Security(data);
+var hubSession = new HubSession();
 var pairingRecovery = new PairingRecovery(data);
 var library = new GameLibrary(data, test && !preview);
 var artwork = new ArtworkStore(library);
@@ -218,12 +231,16 @@ app.Use(async (ctx, next) =>
         ctx.Items["body"] = body;
         bool desktopAuth = IPAddress.IsLoopback(remote) && desktop.Authenticate(ctx.Request.Cookies["lg-desktop"] ?? "") &&
             (ctx.Request.Method == "GET" || ctx.Request.Headers.Origin == $"http://127.0.0.1:{port}");
-        if (!desktopAuth && !security.Verify(ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, body,
+        bool hubAuth = IPAddress.IsLoopback(remote) && hubSession.Authenticate(ctx.Request.Cookies["lg-hub"] ?? "") &&
+            (ctx.Request.Path.StartsWithSegments("/api/hub") || ctx.Request.Path.StartsWithSegments("/api/games") && ctx.Request.Path.Value!.EndsWith("/settings") || ctx.Request.Path == "/api/status" || ctx.Request.Path == "/api/audio" || ctx.Request.Path == "/api/displays") &&
+            (ctx.Request.Method == "GET" || ctx.Request.Headers.Origin == $"http://127.0.0.1:{port}");
+        if (ctx.Request.Path.StartsWithSegments("/api/hub") && !IPAddress.IsLoopback(remote)) { ctx.Response.StatusCode = 403; return; }
+        if (!desktopAuth && !hubAuth && !security.Verify(ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, body,
             ctx.Request.Headers["X-LG-Time"].ToString(), ctx.Request.Headers["X-LG-Nonce"].ToString(), ctx.Request.Headers["X-LG-Signature"].ToString()))
         { ctx.Response.StatusCode = 401; await ctx.Response.WriteAsJsonAsync(new { error = "Pareamento necessário ou comando expirado." }); return; }
     }
     try { await next(); }
-    catch (Exception e) when (e is InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException)
+    catch (Exception e) when (e is InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException || ctx.Request.Path.StartsWithSegments("/api/hub") && e is InvalidDataException or IOException or UnauthorizedAccessException or JsonException)
     {
         if (ctx.Request.Path.StartsWithSegments("/api/games") || ctx.Request.Path == "/api/status") {
             try { File.WriteAllText(Path.Combine(data, "last-game-operation-error.json"), JsonSerializer.Serialize(new {
@@ -231,7 +248,7 @@ app.Use(async (ctx, next) =>
                 errorType = e.GetType().Name, nativeError = (e as System.ComponentModel.Win32Exception)?.NativeErrorCode
             })); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
-        ctx.Response.StatusCode = 409; await ctx.Response.WriteAsJsonAsync(new { error = e is InvalidOperationException ? e.Message : "Não foi possível concluir a operação no Windows." });
+        ctx.Response.StatusCode = 409; await ctx.Response.WriteAsJsonAsync(new { error = e is InvalidOperationException or InvalidDataException ? e.Message : "Não foi possível concluir a operação. Confira os arquivos e tente novamente." });
     }
 });
 app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(Path.Combine(AppContext.BaseDirectory, "wwwroot")) });
@@ -372,6 +389,8 @@ app.MapPost("/api/tv", (HttpContext ctx) =>
 });
 app.MapGet("/api/tv", () => Results.Ok(tvReport));
 async Task EnrichLibrary(bool retryMissing = false) { await library.Metadata.EnsureAll(library.Games, retryMissing); await artwork.EnsureAll(); }
+var pcHub = new PcHub(library, games, () => EnrichLibrary(true));
+pcHub.Map(app, artwork, hubSession, port);
 app.MapPost("/api/library/refresh", async () => { await games.Rescan(); if (!test || preview) _ = EnrichLibrary(true); return Results.Ok(new { count = library.Games.Count }); });
 app.MapGet("/api/library/search", async (string query) => Results.Ok(await library.Metadata.Search(query)));
 app.MapGet("/api/games/{id}/settings", (string id) => {
@@ -416,7 +435,7 @@ app.MapPost("/api/games/{id}/start", async (string id, HttpContext ctx) => { if 
     Presentation.Validate(mode, mode == "stream" && (await StreamStatus()).Available);
     if (!test && desktop.Visible && ctx.Connection.RemoteIpAddress is { } localInput && IPAddress.IsLoopback(localInput)) await desktop.WaitForControllerRelease();
     if (!test && ctx.Connection.RemoteIpAddress is { } tvInput && !IPAddress.IsLoopback(tvInput)) await desktop.Hide(false);
-    await games.Start(id, mode);
+    await games.Start(id, mode, body.RootElement.TryGetProperty("choice", out var choice) ? choice.GetString() : null);
     return Results.Ok(new { accepted = true }); });
 app.MapPost("/api/games/{id}/stop", async (string id, HttpContext ctx) =>
 {
@@ -449,6 +468,7 @@ Console.WriteLine($"LazyGaming: http://127.0.0.1:{port} ({(test ? "SIMULAÇÃO" 
 Console.WriteLine("Pareie pela página aberta no PC. Ctrl+C encerra o auxiliar; jogos permanecem abertos.");
 if (!test) _ = touchpad.Run(app.Lifetime.ApplicationStopping);
 if (!test || preview) _ = EnrichLibrary();
+_ = pcHub.Automatic(app.Lifetime.ApplicationStopping);
 _ = Task.Run(async () =>
 {
     while (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
@@ -458,6 +478,7 @@ _ = Task.Run(async () =>
     }
 });
 if (args.Contains("--launcher")) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(async () => { try { await desktop.Toggle(); } catch { } }); });
+if (args.Contains("--hub")) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(() => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo($"http://127.0.0.1:{port}/hub.html#" + hubSession.Issue()) { UseShellExecute = true })); });
 app.Lifetime.ApplicationStopping.Register(desktop.Close);
 app.Lifetime.ApplicationStopped.Register(() => (platform as IDisposable)?.Dispose());
 await app.RunAsync();

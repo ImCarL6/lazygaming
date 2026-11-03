@@ -2,9 +2,13 @@
 
 Launcher para escolher, abrir, continuar e encerrar jogos do PC pela TV Samsung ou por uma janela executável no Windows. Biblioteca e interface compartilhadas; DualSense conectado ao PC. HDMI é o caminho principal, com streaming Moonlight integrado como alternativa.
 
-## Estado — fontes 0.15.2
+## Estado — fontes 0.17.0
 
 A base 0.14.0 já foi usada no PC e em uma Samsung CU7700. A revisão 0.15 organiza o produto em módulos e adiciona testes de adaptadores de controle; 0.15.1 acrescenta fichas locais independentes da Steam; 0.15.2 abre o seletor Cabo/Stream imediatamente e permite escolher Cabo sem aguardar a consulta de Stream. Build/testes automatizados não substituem uso físico: estas revisões ainda precisam ser validadas com DualSense real e TV. Não é uma publicação na loja Samsung nem um instalador universal.
+
+A revisão 0.16 acrescenta a Central do PC para administrar jogos, pastas de busca automática, cadastros locais, monitores e áudio. O cadastro tem gravação durável, reserva e exclusão mútua entre importações; instalações indisponíveis continuam identificáveis na Central.
+
+A revisão 0.17 permite várias versões sob uma única capa. No Pokopia, **Português (Brasil)** e **English** aparecem no próprio painel de Cabo/Stream; a versão em português usa os ícones DualSense. A última versão aberta fica guardada no PC e vale para PC/TV. Continuar retoma a versão em execução; para mudar, encerre pelo launcher e escolha o outro idioma ao jogar novamente. Jogos sem alternativas mantêm o fluxo anterior. [Cadastro de versões e contrato](docs/VERSOES-DE-JOGO.md).
 
 ## Usar no PC
 
@@ -20,6 +24,12 @@ powershell -NoProfile -File scripts/Publicar-PC.ps1
 O executável fica em `outputs/pc-package/LazyGaming.Host.exe`. Execute com `--lan` para disponibilizar o auxiliar na rede local. Com o auxiliar aberto, `--open-launcher` abre a interface nativa e reutiliza a instância. Os scripts não instalam serviço, tarefa automática, regra de Firewall nem alteram uma instalação existente. Se necessário, permita o executável somente na sua rede privada pelas configurações do Windows.
 
 O pacote é dependente dos runtimes do Windows listados acima. Para uso local existente, os atalhos `Iniciar-LazyGaming.cmd` e `Abrir-LazyGaming.cmd` usam `dist/LazyGaming`; publicar em outra pasta não atualiza esses atalhos automaticamente.
+
+Abra `Central-LazyGaming.cmd`, execute o auxiliar com `--open-hub` ou use **Configurações → Gerenciar biblioteca e pastas** no launcher PC. A Central abre no navegador do PC, com sessão local independente do controle e do vínculo da TV. O acesso deve ser aberto novamente pelo atalho após reiniciar o auxiliar; não exige novo pareamento.
+
+Em **Pastas e busca**, adicione pastas locais, ative ou pause a descoberta Steam e escolha busca automática a cada 1, 5, 15 ou 30 minutos. A rotina procura na pasta escolhida e nas instalações filhas, com deduplicação por instalação/processo; durante um jogo ou abertura pendente, aguarda outra oportunidade. A busca não executa jogos. Pastas indisponíveis e exclusões aparecem no resultado da busca. **Gerenciar** permite conferir arquivos, renomear, ocultar/reexibir e corrigir o caminho de um cadastro local, preservando identidade, ficha e artes. **Adicionar jogo** aceita executável direto, conteúdo Eglantine suportado e imagens locais opcionais, ou uma ficha JSON existente.
+
+Preferências ficam em `library/settings.json`, separadas do catálogo e dos jogos. Cadastro e preferências mantêm reserva `.bak`; uma leitura inválida pode recuperar a última gravação confirmada. Remover uma pasta da busca ou ocultar um jogo preserva seus arquivos e saves. Alterar a busca exige que não haja jogo aberto.
 
 ## Usar na TV
 
@@ -102,7 +112,7 @@ Ao trocar a pasta de uma instalação local já cadastrada, `--replace-local-gam
 
 As imagens são relativas à pasta da ficha ou caminhos absolutos. O importador copia somente as artes para o armazenamento privado, reduzindo a capa até 480×720 e o fundo até 1600×900, sem ampliação; o ícone vem do executável. Guarda cadastro em `library/local-games.json`, originais reduzidos em `library/imports` e artes servidas em `library/art`, com atribuição. Nenhum arquivo do jogo é copiado ou alterado. Reimportar a mesma instalação atualiza a ficha sem duplicar; o nome personalizado permanece em `library/catalog.json`. As fichas Steam existentes continuam compatíveis.
 
-Depois de importar, use **Configurações → Buscar jogos instalados**, sem sessão em andamento, ou reinicie o auxiliar. PC/TV recebem a mesma ficha e artes pelo auxiliar; a UI desta revisão exibe descrição/idioma e permite personalizar o nome. Fichas locais não são associadas à busca Steam. A importação não instala o auxiliar nem atualiza o app da TV. `LAZYGAMING_IMPORT_DATA` permite importar para uma pasta isolada de teste.
+Depois de importar pela CLI, use **Configurações → Buscar jogos instalados**, aguarde a busca automática ou reinicie o auxiliar, com os jogos fechados. A Central atualiza a biblioteca imediatamente ao salvar. PC/TV recebem a mesma ficha e artes pelo auxiliar; a UI exibe descrição/idioma e permite personalizar o nome. Fichas locais não são associadas à busca Steam. A importação não instala o auxiliar nem atualiza o app da TV. `LAZYGAMING_IMPORT_DATA` permite importar para uma pasta isolada de teste.
 
 Pareamento, recuperação, snapshots e cache ficam em `%LOCALAPPDATA%/LazyGaming`, fora do Git/WGT. Nunca exponha a API à Internet; ela usa HTTP/HMAC em LAN confiável. Encerrar pede confirmação; forçar exige confirmar possível perda de progresso. Telas/áudio são restaurados ao terminar a sessão.
 

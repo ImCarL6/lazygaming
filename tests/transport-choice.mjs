@@ -2,16 +2,19 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source = readFileSync('tv/app.js', 'utf8');
-const code = source.slice(source.indexOf('async function choosePresentation()'), source.indexOf('function currentGame()'));
+const code = source.slice(source.indexOf('async function choosePresentation('), source.indexOf('function currentGame()'));
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function fixture() {
   let now = 100000;
   const elements = {};
-  for (const id of ['transport','chooseCable','chooseStream','cancelTransport','transportNote']) elements[id] = {id, hidden: id === 'transport', disabled:false,isConnected:true};
+  for (const id of ['transport','chooseCable','chooseStream','cancelTransport','transportNote','launchChoices','launchChoiceLabel','launchChoiceButtons']) elements[id] = {id, hidden: id === 'transport', disabled:false,isConnected:true};
+  elements.launchChoiceButtons.children=[];
+  Object.defineProperty(elements.launchChoiceButtons,'innerHTML',{set(){this.children=[];}});
+  elements.launchChoiceButtons.appendChild=function(button){this.children.push(button);};
   const previous = {id:'tile',isConnected:true};
   const waiting = {}, calls = [];
   const ctx = {base:'http://pc',presentationCache:{},presentationRequests:{},presentationOrigin:'',presentationEpoch:0,transportTicket:0,lastNavigationAt:0,
-    controllerFocus:previous,document:{activeElement:previous},$:id=>elements[id],Date:class extends Date {static now(){return now;}},
+    controllerFocus:previous,document:{activeElement:previous,createElement(){return {attributes:{},setAttribute(k,v){this.attributes[k]=v;}};}},$:id=>elements[id],Date:class extends Date {static now(){return now;}},
     focusControl(element){ctx.controllerFocus=element;},reportStreamClient:async()=>{},
     api(path){calls.push(path);return new Promise((resolve,reject)=>waiting[path]={resolve,reject});}};
   vm.createContext(ctx);vm.runInContext(code,ctx);
@@ -47,3 +50,17 @@ assert.equal(f.elements.chooseStream.disabled,false);assert.equal(f.ctx.controll
 f.elements.chooseStream.onclick();assert.equal(await result,'stream');
 f.ctx.base='http://outro-pc';result=f.ctx.choosePresentation();assert.equal(f.elements.chooseStream.disabled,true,'troca de PC não reutiliza disponibilidade anterior');f.elements.cancelTransport.onclick();await result;
 console.log('PASS: seletor imediato, Cabo independente, cache curto, cancelamento/falhas, foco e respostas tardias sem lançar jogos.');
+
+f=fixture();let picked=null;
+const game={choiceLabel:'Idioma',selectedChoice:'pt-br',choices:[{id:'pt-br',name:'Português (Brasil)',available:true},{id:'en',name:'English',available:true}]};
+result=f.ctx.choosePresentation(game,value=>picked=value);assert.equal(f.elements.launchChoices.hidden,false);
+assert.equal(f.elements.launchChoiceButtons.children[0].attributes['aria-pressed'],'true');
+f.elements.launchChoiceButtons.children[1].onclick();assert.equal(f.elements.launchChoiceButtons.children[1].attributes['aria-pressed'],'true');
+assert.equal(f.elements.launchChoiceButtons.children[0].attributes['aria-pressed'],'false');await flush();
+f.waiting['/api/presentation/cable'].resolve({available:true});await flush();f.elements.chooseCable.onclick();
+assert.equal(await result,'cable');assert.equal(picked,'en','language and transport selected in one panel');
+picked=null;result=f.ctx.choosePresentation(game,value=>picked=value);f.elements.cancelTransport.onclick();await result;assert.equal(picked,null,'cancel does not change preference');
+result=f.ctx.choosePresentation();assert.equal(f.elements.launchChoices.hidden,true,'ordinary games keep original panel');f.elements.cancelTransport.onclick();await result;
+const missing={...game,choices:game.choices.map(v=>({...v,available:false}))};result=f.ctx.choosePresentation(missing,value=>picked=value);
+assert.equal(f.elements.chooseCable.disabled,true,'no version available blocks launch');f.elements.cancelTransport.onclick();await result;
+console.log('PASS: idioma e transporte no mesmo painel, seleção independente, cancelamento e jogos sem variantes.');

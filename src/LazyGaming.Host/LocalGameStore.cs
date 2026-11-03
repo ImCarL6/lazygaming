@@ -7,7 +7,9 @@ namespace LazyGaming;
 
 // Cadastro local explícito: não depende de uma loja e nunca executa os arquivos importados.
 public record LocalGameRegistration(string Executable, string WorkingDirectory, GameMetadata Metadata, string? Arguments = null, string? ContentPath = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Id = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Id = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LaunchChoice[]? Choices = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ChoiceLabel = null);
 
 public sealed class LocalGameStore(string directory)
 {
@@ -32,7 +34,7 @@ public sealed class LocalGameStore(string directory)
         var toc = new byte[(int)size]; stream.ReadExactly(toc);
         return CryptographicOperations.FixedTimeEquals(SHA256.HashData(toc), header[24..56]);
     }
-    static LocalGameRegistration Validate(LocalGameRegistration item)
+    static LocalGameRegistration Validate(LocalGameRegistration item, bool importing = false)
     {
         if (!Path.IsPathFullyQualified(item.Executable) || !Path.IsPathFullyQualified(item.WorkingDirectory)) throw new InvalidDataException("Informe caminhos absolutos para a instalação local.");
         var executable = Path.GetFullPath(item.Executable);
@@ -47,11 +49,27 @@ public sealed class LocalGameStore(string directory)
         if (item.Id != null && !System.Text.RegularExpressions.Regex.IsMatch(item.Id, "^local-[a-f0-9]{12}$"))
             throw new InvalidDataException("Identidade local inválida.");
         if (item.ContentPath != null && (!Path.GetFileName(executable).Equals("eglantine.exe", StringComparison.OrdinalIgnoreCase)
-            || !ValidRuntimeContent(item.ContentPath)))
+            || ((importing || item.Choices == null) && !ValidRuntimeContent(item.ContentPath))))
             throw new InvalidDataException("Informe um ExeFS ou contêiner NUP válido existente para o Eglantine.");
+        if (item.Choices != null) {
+            if (item.ContentPath == null || item.Choices.Length is < 2 or > 8 || item.Choices.Any(v => v == null
+                || !System.Text.RegularExpressions.Regex.IsMatch(v.Id ?? "", "^[a-z0-9][a-z0-9-]{0,31}$")
+                || string.IsNullOrWhiteSpace(v.Name) || v.Name.Length > 50 || v.Name.Any(char.IsControl)
+                || !Path.IsPathFullyQualified(v.ContentPath) || v.ContentPath.Any(char.IsControl)
+                || (importing && !ValidRuntimeContent(v.ContentPath)))
+                || item.Choices.Select(v => v.Id).Distinct().Count() != item.Choices.Length
+                || item.Choices.Select(v => v.ContentPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != item.Choices.Length
+                || string.IsNullOrWhiteSpace(item.ChoiceLabel) || item.ChoiceLabel.Length > 30 || item.ChoiceLabel.Any(char.IsControl))
+                throw new InvalidDataException("Informe versões distintas com nome e conteúdo válido, e um rótulo para a escolha.");
+        }
         return item with { Executable = executable, WorkingDirectory = folder, Arguments = null };
     }
-    List<LocalGameRegistration> Load() => File.Exists(FilePath) ? JsonSerializer.Deserialize<List<LocalGameRegistration>>(File.ReadAllText(FilePath), Json) ?? [] : [];
+    List<LocalGameRegistration> Load() => LibraryJson.Read<List<LocalGameRegistration>>(FilePath, () => []);
+    public object[] Inspect() => Load().Select(entry => {
+        string? reason = null;
+        try { Validate(entry); } catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NullReferenceException) { reason = e.Message; }
+        return (object)new { id = Identity(entry), name = entry.Metadata.Title, executable = entry.Executable, folder = entry.WorkingDirectory, contentPath = entry.ContentPath, available = reason == null, reason };
+    }).ToArray();
     public IEnumerable<Game> Read(List<string> notes)
     {
         var games = new List<Game>();
@@ -61,15 +79,16 @@ public sealed class LocalGameStore(string directory)
                     var item = Validate(entry);
                     games.Add(new(Identity(item), item.Metadata.Title, item.Executable, item.Executable,
                         Folder: item.WorkingDirectory, ProcessArgument: item.ContentPath, LaunchDirectory: item.WorkingDirectory, LocalMetadata: item.Metadata,
-                        LaunchArguments: item.ContentPath == null ? null : ["-f", "-g", item.ContentPath]));
-                } catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NullReferenceException) { notes.Add("Uma instalação local cadastrada está indisponível."); }
+                        LaunchArguments: item.ContentPath == null ? null : ["-f", "-g", item.ContentPath], Choices: item.Choices, ChoiceLabel: item.ChoiceLabel));
+                } catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NullReferenceException) { notes.Add(entry.Metadata.Title + ": instalação local cadastrada indisponível."); }
             }
         } catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { notes.Add("Cadastro local temporariamente indisponível; biblioteca existente preservada."); }
         return games;
     }
     public string Import(string manifest, string? replaceId = null)
     {
-        var item = Validate(JsonSerializer.Deserialize<LocalGameRegistration>(File.ReadAllText(manifest), Json) ?? throw new InvalidDataException("Ficha local vazia."));
+        using var held = new LibraryFileLock(FilePath);
+        var item = Validate(JsonSerializer.Deserialize<LocalGameRegistration>(File.ReadAllText(manifest), Json) ?? throw new InvalidDataException("Ficha local vazia."), true);
         if (item.Id != null) throw new InvalidDataException("A identidade é mantida pelo cadastro; use a substituição explícita para atualizar uma instalação.");
         var entries = Load(); // Erro de leitura não autoriza sobrescrever um cadastro existente.
         var sameInstallation = entries.Where(e => string.Equals(Path.GetFullPath(e.WorkingDirectory).TrimEnd(Path.DirectorySeparatorChar), item.WorkingDirectory, StringComparison.OrdinalIgnoreCase)
@@ -86,7 +105,7 @@ public sealed class LocalGameStore(string directory)
         if (id != GameLibrary.LocalId(item.WorkingDirectory)) item = item with { Id = id };
         var art = item.Metadata.Artwork!;
         var sourceRoot = Path.GetDirectoryName(Path.GetFullPath(manifest))!;
-        var sources = new[] { art.Cover, art.Backdrop }.Select(p => Path.GetFullPath(p, sourceRoot)).ToArray();
+        var sources = new[] { art.Cover, art.Backdrop }.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => Path.GetFullPath(p, sourceRoot)).ToArray();
         foreach (var source in sources) if (new FileInfo(source).Length > 8_000_000) throw new InvalidDataException("Arte local muito grande.");
         var content = sources.SelectMany(p => System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(p))).ToArray();
         var revision = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(content))[..16];
@@ -94,16 +113,17 @@ public sealed class LocalGameStore(string directory)
         var output = Path.Combine(directory, "library", relative);
         Directory.CreateDirectory(output);
         foreach (var (kind, path) in new[] { ("cover", art.Cover), ("backdrop", art.Backdrop) }) {
+            if (string.IsNullOrWhiteSpace(path)) continue;
             var source = Path.GetFullPath(path, sourceRoot);
-            using var input = File.OpenRead(source);
+            using var input = new MemoryStream(File.ReadAllBytes(source));
             ArtworkStore.OptimizeLocal(input, Path.Combine(output, kind + ".jpg"), kind);
         }
-        item = item with { Metadata = item.Metadata with { Artwork = art with { Cover = Path.Combine(relative, "cover.jpg"), Backdrop = Path.Combine(relative, "backdrop.jpg") } } };
+        item = item with { Metadata = item.Metadata with { Artwork = art with { Cover = string.IsNullOrWhiteSpace(art.Cover) ? "" : Path.Combine(relative, "cover.jpg"), Backdrop = string.IsNullOrWhiteSpace(art.Backdrop) ? "" : Path.Combine(relative, "backdrop.jpg") } } };
         entries.RemoveAll(e => Identity(e) == id || string.Equals(Path.GetFullPath(e.WorkingDirectory).TrimEnd(Path.DirectorySeparatorChar), item.WorkingDirectory, StringComparison.OrdinalIgnoreCase)
             || string.Equals(Path.GetFullPath(e.Executable), item.Executable, StringComparison.OrdinalIgnoreCase));
         entries.Add(item);
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-        File.WriteAllText(FilePath + ".tmp", JsonSerializer.Serialize(entries, Json)); File.Move(FilePath + ".tmp", FilePath, true);
+        LibraryJson.Write(FilePath, entries);
         return id;
     }
 }

@@ -95,6 +95,18 @@ static class LocalGameTests
             Check(migrated.Metadata.DisplayName(upgraded) == "Meu jogo" && File.ReadAllBytes(runtimeCatalogPath).SequenceEqual(runtimeCatalogBefore), "troca de pasta conserva nome personalizado e catálogo intacto");
             var otherAfter = JsonNode.Parse(File.ReadAllText(registrationsPath))!.AsArray().Single(e => e!["Metadata"]!["Title"]!.GetValue<string>() == "Outro jogo");
             Check(JsonNode.DeepEquals(otherBefore, otherAfter), "outro cadastro permanece intacto semanticamente");
+            var choices = nupRegistration with { Choices = [new("pt-br", "Português (Brasil)", nup), new("en", "English", content)], ChoiceLabel = "Idioma" };
+            File.WriteAllText(manifest, JsonSerializer.Serialize(choices)); runtimeStore.Import(manifest, runtimeGame.Id);
+            var withChoices = new GameLibrary(runtimeData, false, Path.Combine(root, "no-steam"), []).Games.Single(g => g.Id == runtimeGame.Id);
+            Check(withChoices.Choices?.Length == 2 && withChoices.Id == upgraded.Id, "versões compartilham capa e identidade, sem duplicação");
+            File.Move(nup, nup + ".missing");
+            Check(new GameLibrary(runtimeData, false, Path.Combine(root, "no-steam"), []).Games.Any(g => g.Id == runtimeGame.Id), "versão ausente não apaga outra versão disponível");
+            File.Move(nup + ".missing", nup);
+            var validChoices = File.ReadAllBytes(registrationsPath);
+            File.WriteAllText(manifest, JsonSerializer.Serialize(choices with { Choices = [new("en", "English", nup), new("en", "Duplicate", content)] }));
+            refused = false; try { runtimeStore.Import(manifest, runtimeGame.Id); } catch (InvalidDataException) { refused = true; }
+            Check(refused && File.ReadAllBytes(registrationsPath).SequenceEqual(validChoices), "escolhas duplicadas recusadas sem alterar cadastro");
+            File.WriteAllText(manifest, JsonSerializer.Serialize(nupRegistration)); runtimeStore.Import(manifest, runtimeGame.Id);
             var migratedBefore = File.ReadAllBytes(registrationsPath);
             refused = false; try { runtimeStore.Import(manifest, "local-000000000000"); } catch (InvalidDataException) { refused = true; }
             Check(refused && File.ReadAllBytes(registrationsPath).SequenceEqual(migratedBefore), "substituição sem identidade existente não altera biblioteca");

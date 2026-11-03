@@ -26,6 +26,8 @@ Para conferir a recuperação de foco com WebView2 real, execute `dotnet run --p
 
 PC: `Publicar-PC.ps1` publica Release dependente dos runtimes Desktop/ASP.NET Core 10, copia a interface e licenças. Um pacote novo contém atalho local para `--open-launcher`; o auxiliar também pode ser iniciado com `--lan`. Não instala autostart. Verifique a pasta preparada antes de substituir uma versão em uso.
 
+A Central usa `--open-hub`/`Central-LazyGaming.cmd`, páginas `hub.html/css/js` e APIs `/api/hub` limitadas ao loopback. Um token descartável de um minuto cria cookie HttpOnly/SameSite próprio; alterações exigem origem exata. A sessão da Central não possui acesso aos endpoints de jogo/controle do launcher e não renova o pareamento da TV. `HubLibraryTests` cobre pastas, busca automática/adiamento durante jogo, gravações concorrentes, reserva e ausência da instalação; `hub-integration.mjs` cobre autenticação, origem, importação, ocultação e reparo sem executar jogos reais.
+
 TV: `Empacotar-TV.ps1 -StageOnly` não exige CLI nem assinatura. Para gerar WGT, forneça `-TizenCli` e `-SigningProfile`, ou variáveis `LAZYGAMING_TIZEN_CLI`/`LAZYGAMING_TIZEN_PROFILE`. O perfil já deve existir localmente; senha/chaves não são argumentos do script. O script não instala o WGT na TV. `Verificar-Pacote.py` confere conteúdo/fontes, referências SHA-512, validade de certificados e assinaturas; isso não comprova instalação ou funcionamento físico.
 
 ## Git e CI

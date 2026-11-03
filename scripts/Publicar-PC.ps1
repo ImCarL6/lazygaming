@@ -14,5 +14,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Falha ao publicar o PC.' }
     Copy-Item -LiteralPath LICENSE,THIRD_PARTY.md -Destination $target
     Set-Content -LiteralPath (Join-Path $target 'Abrir-LazyGaming.cmd') -Encoding Ascii -Value '@echo off', 'start "" "%~dp0LazyGaming.Host.exe" --open-launcher'
+    Set-Content -LiteralPath (Join-Path $target 'Central-LazyGaming.cmd') -Encoding Ascii -Value '@echo off', 'start "" "%~dp0LazyGaming.Host.exe" --open-hub'
     Write-Output "Executável preparado: $target"
 } finally { Pop-Location }

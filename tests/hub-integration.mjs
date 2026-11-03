@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {readFileSync,writeFileSync,mkdirSync,rmSync} from 'node:fs';
+import {join,resolve} from 'node:path';
+import {tmpdir} from 'node:os';
+import {createHmac,randomBytes} from 'node:crypto';
+const port=47978,base=`http://127.0.0.1:${port}`,data=join(tmpdir(),'lazygaming-test-'+port),root=join(tmpdir(),'lg-hub-http-'+randomBytes(8).toString('hex'));
+mkdirSync(join(data,'library'),{recursive:true});mkdirSync(root,{recursive:true});
+writeFileSync(join(data,'library','settings.json'),JSON.stringify({Folders:[],Steam:false,Automatic:false,IntervalMinutes:5}));
+writeFileSync(join(data,'library','local-games.json'),'[]');
+const exe=join(root,'Example.exe');writeFileSync(exe,'test fixture never executed');
+let key,cookie;
+const child=spawn('dotnet',[resolve('src/LazyGaming.Host/bin/Debug/net10.0-windows/LazyGaming.Host.dll'),'--preview-library'],{env:{...process.env,LAZYGAMING_PORT:String(port)},windowsHide:true,stdio:['ignore','pipe','pipe']});
+let logs='';child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);
+async function call(route,body,headers={}){const response=await fetch(base+route,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)});let value;try{value=await response.json();}catch{}return {response,value};}
+async function signed(route,body){const time=String(Date.now()),nonce=randomBytes(16).toString('hex'),text=body===undefined?'':JSON.stringify(body),method=body===undefined?'GET':'POST';return call(route,body,{'X-LG-Time':time,'X-LG-Nonce':nonce,'X-LG-Signature':createHmac('sha256',Buffer.from(key,'hex')).update(`${method}\n${route}\n${time}\n${nonce}\n${text}`).digest('hex')});}
+async function hub(route,body,origin=base){const result=await call(route,body,{Cookie:cookie,Origin:origin});return result;}
+try{
+ for(let i=0;i<100;i++){try{if((await fetch(base+'/api/discover')).ok)break;}catch{}if(child.exitCode!==null)throw Error(logs);await new Promise(r=>setTimeout(r,100));}
+ assert.equal((await call('/api/hub')).response.status,401);
+ const code=(await call('/api/local-pairing',{})).value.code;key=(await call('/api/pair',{code})).value.key;
+ const pairing=readFileSync(join(data,'pairing.json'),'utf8');
+ const url=(await signed('/api/hub/open',{})).value.url, token=new URL(url).hash.slice(1);
+ assert.equal((await call('/hub-session',{token},{Origin:'https://example.com'})).response.status,403);
+ const session=await call('/hub-session',{token},{Origin:base});assert.equal(session.response.status,200);cookie=session.response.headers.get('set-cookie').split(';')[0];
+ assert.match(session.response.headers.get('set-cookie'),/httponly/i);
+ assert.equal((await call('/hub-session',{token},{Origin:base})).response.status,403);
+ assert.equal((await hub('/api/hub/scan',{},'https://example.com')).response.status,401);
+ let added=await hub('/api/hub/import',{title:'Example local',executable:exe});assert.equal(added.response.status,200,JSON.stringify(added.value));
+ assert.equal(added.value.games.length,1);let id=added.value.games[0].id;
+ assert.equal((await hub('/api/hub/import',{title:'Example local',executable:exe})).value.games.length,1);
+ assert.equal((await hub('/api/hub/games/'+id+'/enabled',{enabled:false})).value.games[0].enabled,false);
+ assert.equal((await hub('/api/status')).value.state.games.length,0);
+ await hub('/api/hub/games/'+id+'/enabled',{enabled:true});
+ await hub('/api/games/'+id+'/settings',{name:'Meu exemplo'});
+ const moved=join(root,'New');mkdirSync(moved);const newExe=join(moved,'Example.exe');writeFileSync(newExe,'never executed');
+ const repaired=await hub('/api/hub/repair',{id,executable:newExe});assert.equal(repaired.response.status,200,JSON.stringify(repaired.value));assert.equal(repaired.value.games[0].id,id);assert.equal(repaired.value.games[0].name,'Meu exemplo');
+ assert.equal((await hub('/api/hub/import',{title:'No',executable:join(root,'missing.exe')})).response.status,409);
+ assert.equal((await hub('/api/games/'+id+'/start',{})).response.status,401,'hub cookie cannot launch games');
+ assert.equal((await hub('/api/launcher/toggle',{})).response.status,401,'hub does not control launcher');
+ assert.equal((await hub('/api/hub/settings',{folders:[{path:resolve('/')}],steam:false,automatic:false,intervalMinutes:5})).response.status,409,'whole drive refused');
+ rmSync(newExe);const missing=await hub('/api/hub/scan',{});assert.equal(missing.response.status,200);assert.equal(missing.value.games.length,0);assert.equal(missing.value.registrations.length,1);assert.equal(missing.value.registrations[0].available,false);
+ assert.equal(readFileSync(join(data,'pairing.json'),'utf8'),pairing,'hub leaves pairing unchanged');
+ assert.equal((await hub('/api/status')).value.simulatedLaunches,0);
+ console.log('PASS: PC hub authentication, origin, one-use token, import, deduplication, hide/show, repair, missing registration and pairing preservation.');
+}finally{if(child.exitCode===null){const ended=once(child,'exit');child.kill();await ended;}rmSync(root,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});}

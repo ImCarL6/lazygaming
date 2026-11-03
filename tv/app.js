@@ -182,7 +182,8 @@ async function stop(game, nextGame, mode) {
   message('O jogo ainda está aberto. Saia pelo menu do jogo e tente novamente.'); return false;
 }
 async function play(game) {
-  var mode = await choosePresentation(); if (!mode) return;
+  var choice = null;
+  var mode = await choosePresentation(game, function (value) { choice = value; }); if (!mode) return;
   if (mode === 'stream' && window.LGStream) await window.LGStream.prepare();
   var state = await api('/api/status'), other = state.state.games.find(function (g) { return g.id !== game.id && (g.running || g.starting); });
   if (other) {
@@ -191,7 +192,7 @@ async function play(game) {
     if (!await stop(other, game.id, mode)) return;
   }
   message(mode === 'stream' ? 'Abrindo o jogo para transmissão…' : 'Preparando a TV e abrindo o jogo…');
-  await api('/api/games/' + game.id + '/start', { mode: mode }); await refresh();
+  await api('/api/games/' + game.id + '/start', { mode: mode, choice: choice }); await refresh();
   if (mode === 'stream') await showStream(); else await showHdmi();
 }
 async function reportStreamClient() {
@@ -205,22 +206,40 @@ async function showStream() {
   if (!window.LGStream) throw Error('Motor de transmissão indisponível.');
   await window.LGStream.start();
 }
-async function choosePresentation() {
+async function choosePresentation(game, onChoice) {
   var previous = controllerFocus || document.activeElement, ticket = ++transportTicket, navigationAt = lastNavigationAt;
   var cable = null, stream = null;
+  var choices = game && game.choices || [], selected = game && game.selectedChoice;
+  if (!choices.some(function (v) { return v.id === selected && v.available; })) selected = (choices.find(function (v) { return v.available; }) || {}).id;
+  var choicePanel = $('launchChoices'), choiceButtons = $('launchChoiceButtons');
+  if (choicePanel) {
+    choicePanel.hidden = !choices.length; choiceButtons.innerHTML = '';
+    $('launchChoiceLabel').textContent = game && game.choiceLabel || 'Versão';
+    choices.forEach(function (v) {
+      var button = document.createElement('button'); button.textContent = v.name; button.disabled = !v.available;
+      button.setAttribute('aria-pressed', v.id === selected ? 'true' : 'false');
+      button.onclick = function () {
+        selected = v.id;
+        Array.prototype.forEach.call(choiceButtons.children, function (node) { node.setAttribute('aria-pressed', node === button ? 'true' : 'false'); });
+      };
+      choiceButtons.appendChild(button);
+    });
+  }
   $('transport').hidden = false;
   return new Promise(function (resolve) {
     function close(mode) {
       if (ticket !== transportTicket) return;
+      if (mode && choices.length && !selected) return;
+      if (mode && onChoice) onChoice(selected || null);
       transportTicket++; $('transport').hidden = true;
       if (previous && previous.isConnected) focusControl(previous); resolve(mode);
     }
     function render() {
       if (ticket !== transportTicket) return;
       $('chooseCable').hidden = !!cable && cable.available === false;
-      $('chooseCable').disabled = !cable || cable.available !== true;
-      $('chooseStream').disabled = !stream || stream.available !== true;
-      $('transportNote').textContent = [cable ? cable.note : 'Verificando Cabo…', stream ? stream.note : 'Verificando Stream…'].filter(Boolean).join(' ');
+      $('chooseCable').disabled = !cable || cable.available !== true || (choices.length > 0 && !selected);
+      $('chooseStream').disabled = !stream || stream.available !== true || (choices.length > 0 && !selected);
+      $('transportNote').textContent = [choices.length && !selected ? 'Os arquivos destas versões estão indisponíveis.' : '', cable ? cable.note : 'Verificando Cabo…', stream ? stream.note : 'Verificando Stream…'].filter(Boolean).join(' ');
       var current = controllerFocus || document.activeElement;
       if (!current || current.disabled || current.hidden || (current === $('cancelTransport') && lastNavigationAt === navigationAt)) {
         focusControl(!$('chooseCable').hidden && !$('chooseCable').disabled ? $('chooseCable') : !$('chooseStream').disabled ? $('chooseStream') : $('cancelTransport'));
@@ -324,7 +343,8 @@ function selectGame(id, scroll) {
   });
   $('gameTitle').textContent = game.name; $('gameOrigin').textContent = game.origin || 'PC';
   if ($('gameYear')) $('gameYear').textContent = game.releaseYear || '';
-  $('gameState').textContent = game.running ? 'Em execução' : game.starting ? 'Abrindo…' : game.available ? '' : 'Identificação pendente';
+  var runningChoice = (game.choices || []).find(function (v) { return v.id === game.runningChoice; });
+  $('gameState').textContent = game.running ? 'Em execução' + (runningChoice ? ' · ' + runningChoice.name : '') : game.starting ? 'Abrindo…' : game.available ? '' : 'Identificação pendente';
   $('heroPlay').firstChild.nodeValue = (game.running ? 'Continuar' : game.starting ? 'Abrindo…' : 'Jogar') + ' ';
   $('heroPlay').disabled = !game.available || game.starting;
   var runningGame = libraryGames.find(function (item) { return item.running; });
@@ -571,6 +591,7 @@ $('recoverConnection').onclick = function () { run(recoverConnection); };
 updateRecovery();
 $('refresh').onclick = function () { run(async function () { await refresh(); await refreshAudio(); }); };
 $('rescan').onclick = function () { run(async function () { message('Buscando jogos instalados…'); var result = await api('/api/library/refresh', {}); await refresh(); message(result.count + ' jogos na biblioteca.'); }); };
+if ($('openPcHub')) $('openPcHub').onclick = function () { run(async function () { await api('/api/hub/launch', {}); message('Central aberta no navegador do PC.'); }); };
 $('settings').onclick = function () { if (!connected) { $('setup').hidden = false; focusControl($('find')); } else { $('options').hidden = false; focusControl(typeof window !== 'undefined' && window.LGStream && window.LGStream.active ? $('streamAuto') : $('closeOptions')); run(refreshAudio); } };
 $('streamShortcut').onclick = function () { $('options').classList.add('stream-only'); $('options').hidden = false; focusControl($('streamAuto')); };
 var openAllSettings = $('settings').onclick;
@@ -774,6 +795,7 @@ async function initialize() {
     try {
       await request(location.origin + '/desktop-session', token ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LG-Client': inputClient }, body: JSON.stringify({ token: token }) } : { headers: { 'X-LG-Client': inputClient } });
       desktop = true; localStorage.setItem('desktop-client', 'true'); session = { desktop: true }; base = location.origin;
+      if ($('pcHubSection')) $('pcHubSection').hidden = false;
       document.documentElement.classList.add('controller-navigation', 'desktop-launcher');
       history.replaceState(null, '', location.pathname); document.title = 'LazyGaming — PC';
       var back = button('Ocultar launcher', function () { return api('/api/launcher/hide', {}); }); back.id = 'returnGame'; $('dockActions').appendChild(back);

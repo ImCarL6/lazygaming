@@ -30,6 +30,8 @@ TaskbarOverflowTests.Run();
 NativeDesktopTests.Run();
 await LibraryMetadataTests.Run();
 await LocalGameTests.Run();
+await LaunchChoiceTests.Run();
+await HubLibraryTests.Run();
 await LaunchIsolationTests.Run();
 await ProcessExitTests.Run();
 using (var dormantBackground = new GameBackground(() => throw new Exception("launcher oculto não consulta jogo"), () => false)) {

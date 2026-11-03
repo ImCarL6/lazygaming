@@ -2,6 +2,8 @@ using System.Drawing;
 using System.Windows.Forms;
 using LazyGaming;
 
+if (!args.Contains("--legacy-dpi")) Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+if (args.Contains("--verify-scale")) { await LauncherScaleFixture.Run(args.Contains("--legacy-dpi")); return; }
 if (args.Contains("--verify-opening-focus")) { await LauncherOpeningFixture.Run(); return; }
 
 var ready = new TaskCompletionSource<nint>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -39,7 +39,7 @@ f.bg.update(true, false, true, 1); f.bg.update(true, true, true, 1); assert.equa
 
 // A escolha não pode fechar outro jogo nem iniciar qualquer um ao cancelar.
 const app = readFileSync('tv/app.js', 'utf8');
-const flow = app.slice(app.indexOf('async function play(game)'), app.indexOf('async function choosePresentation()'));
+const flow = app.slice(app.indexOf('async function play(game)'), app.indexOf('async function choosePresentation('));
 const calls = [];
 const ctx = { choosePresentation: async () => null, api: async () => calls.push('api'), message() {}, refresh() {}, showHdmi() {} };
 vm.createContext(ctx); vm.runInContext(flow, ctx); await ctx.play({ id: 'wilds' }); assert.equal(calls.length, 0);

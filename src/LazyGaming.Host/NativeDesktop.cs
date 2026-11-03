@@ -16,8 +16,9 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
     Action? focusContent;
     volatile bool live;
     object dimensions = new { };
+    object scale = new { };
     string? issue;
-    public object Status => new { engine = "webview2-dwm", live, dimensions, issue };
+    public object Status => new { engine = "webview2-dwm", live, dimensions, scale, issue };
     public Task<nint> Open(string url) {
         var ui = new Thread(() => {
             try {
@@ -30,6 +31,23 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 window.Activated += (_, _) => web.Focus();
                 using var timer = new System.Windows.Forms.Timer { Interval = 500 };
                 bool desired = false;
+                bool readingScale = false;
+                string lastScale = "";
+                async void RefreshScale() {
+                    if (web.CoreWebView2 == null || readingScale) return;
+                    var key = $"{window.Bounds}:{window.DeviceDpi}:{web.ClientSize}:{web.ZoomFactor}";
+                    if (key == lastScale) return;
+                    readingScale = true;
+                    try {
+                        var browser = await web.CoreWebView2.ExecuteScriptAsync("JSON.stringify({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,viewportScale:visualViewport?visualViewport.scale:1})");
+                        var decoded = JsonSerializer.Deserialize<string>(browser);
+                        scale = new { dpi = WindowFocus.WindowDpi(window.Handle), managedDpi = window.DeviceDpi, awareness = WindowFocus.DpiAwareness(window.Handle),
+                            formWidth = window.Width, formHeight = window.Height, webWidth = web.Width, webHeight = web.Height,
+                            zoom = web.ZoomFactor, browser = decoded == null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(decoded) };
+                        lastScale = key;
+                    } catch (Exception e) when (e is InvalidOperationException or JsonException or COMException) { }
+                    finally { readingScale = false; }
+                }
                 void RefreshSurface() {
                     bool active = false;
                     try { active = desired && window.Visible && window.WindowState != FormWindowState.Minimized && surface.Present(gameWindow(), window.Bounds); }
@@ -43,7 +61,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 window.LocationChanged += (_, _) => RefreshSurface();
                 window.SizeChanged += (_, _) => RefreshSurface();
                 window.FormClosed += (_, _) => Application.ExitThread();
-                timer.Tick += (_, _) => RefreshSurface();
+                timer.Tick += (_, _) => { RefreshSurface(); RefreshScale(); };
                 _ = window.Handle;
                 window.BeginInvoke(async () => {
                     try {
