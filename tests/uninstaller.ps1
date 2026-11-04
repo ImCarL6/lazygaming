@@ -3,7 +3,9 @@ $ErrorActionPreference = 'Stop'
 # links, processo em uso, sessao pendente e remocao parcial. Nunca toca no perfil real.
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $ps51 = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-$testRoot = Join-Path $env:TEMP ('lg-uninstall-' + [guid]::NewGuid().ToString('N'))
+# PS 5.1 expande nomes 8.3 em GetFullPath; usar a mesma raiz completa nas fixtures,
+# no registro e no processo de teste, como o desinstalador faz ao receber -Sandbox.
+$testRoot = Join-Path ([IO.Path]::GetFullPath($env:TEMP)) ('lg-uninstall-' + [guid]::NewGuid().ToString('N'))
 $utf8 = [Text.UTF8Encoding]::new($false)
 $failures = 0
 function Check([bool]$ok, [string]$name) { if ($ok) { Write-Output "PASS $name" } else { Write-Output "FAIL $name"; $script:failures++ } }
