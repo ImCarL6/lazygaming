@@ -491,7 +491,9 @@ app.MapPost("/api/hub/pc-settings", async (HttpContext ctx) => {
     });
     return Results.Ok(pcPreferences.Current);
 });
-List<Displays.Screen> SetupScreens() => test ? [new("Tela de teste","test-display",5,true,true,1920,1080,60)] : Displays.List();
+// --preview-samsung (só em teste/prévia) simula uma TV Samsung conectada e inativa para conferir a etapa opcional.
+List<Displays.Screen> SetupScreens() => test ? [new("Tela de teste","test-display",5,true,true,1920,1080,60),
+    .. (args.Contains("--preview-samsung") ? new[] { new Displays.Screen("SAMSUNG","test-samsung",5,true,false,3840,2160,60) } : [])] : Displays.List();
 List<AudioDevice> SetupAudio() => test ? [] : Audio.List();
 object SetupSnapshot() {
     var screens = SetupScreens(); var preferences = pcPreferences.Current;
@@ -500,7 +502,8 @@ object SetupSnapshot() {
         defaultControllerOptions = PcSetup.Defaults(touchpad.Detection,preferences.ControllerSource),
         displayPath = preferences.DisplayPath ?? Displays.SelectTarget(screens)?.DevicePath,
         onlyGameDisplay = !environment.DisplayControls.MonitorsEnabled,
-        samsungHint = PcSetup.SuggestSamsung(screens,preferences,security.Paired) };
+        samsungHint = PcSetup.SuggestSamsung(screens,preferences,security.Paired),
+        samsungOffer = PcSetup.SamsungOffer(screens,preferences,security.Paired,lan,test ? [] : lanAddresses.Select(a => a.Address.ToString()).ToArray()) };
 }
 app.MapGet("/api/hub/setup", () => Results.Ok(SetupSnapshot()));
 object IntegrationSnapshot() => new { startWithWindows = !test && PcIntegration.StartsWithWindows(), desktopShortcut = !test && PcIntegration.HasDesktopShortcut(),
@@ -540,6 +543,11 @@ app.MapPost("/api/hub/setup", async (HttpContext ctx) => {
 app.MapPost("/api/hub/samsung-hint/dismiss", () => {
     pcPreferences.Save(pcPreferences.Current with { SamsungHintDismissed = true });
     return Results.Ok(new { accepted = true });
+});
+// Retomar pelo painel avançado: só desfaz a dispensa; não ativa LAN nem consulta a TV.
+app.MapPost("/api/hub/samsung-hint/resume", () => {
+    pcPreferences.Save(pcPreferences.Current with { SamsungHintDismissed = false });
+    return Results.Ok(SetupSnapshot());
 });
 app.MapPost("/api/library/refresh", async () => { await games.Rescan(); if (!test || preview) _ = EnrichLibrary(true); return Results.Ok(new { count = library.Games.Count }); });
 app.MapGet("/api/library/search", async (string query) => Results.Ok(await library.Metadata.Search(query)));

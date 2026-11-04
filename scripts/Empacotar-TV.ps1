@@ -17,7 +17,7 @@ foreach ($required in @('moonlight-wasm.js','moonlight-wasm.js.mem','moonlight-w
     if (!(Test-Path -LiteralPath (Join-Path $projectRoot "tv/stream-engine/$required"))) { throw 'Prepare o motor com scripts/Obter-Motor.py antes de empacotar.' }
 }
 [IO.Directory]::CreateDirectory($stage) | Out-Null
-foreach ($name in @('index.html','style.css','app.js','platform.js','presentation.js','crypto.js','config.xml','stream.js','stream-policy.js')) {
+foreach ($name in @('index.html','style.css','controller-art.css','app.js','platform.js','presentation.js','crypto.js','config.xml','stream.js','stream-policy.js','controller-art.js','first-run.js','advanced.js')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot "tv/$name") -Destination $stage
 }
 foreach ($folder in @('stream-engine','assets')) {

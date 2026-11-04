@@ -31,7 +31,7 @@ async function refreshSetup() {
     showShortcut('setupLauncherShortcut',controls.launcher || controls.launcherBinding);
     $('setupAudio').replaceChildren(option('','Áudio da tela de jogo · automático'),option('keep','Manter a saída atual'),...info.audio.map(d=>option(d.id,d.name)));
     $('setupAudio').value = p.audioDeviceId || '';
-    $('setupOnlyDisplay').checked = p.displayPath ? info.onlyGameDisplay : true;
+    $('setupOnlyDisplay').checked = p.displayPath ? info.onlyGameDisplay : false;
     setupInitialized = true;
   }
   if (!p.controller && !editedBindings.has('setupLauncherShortcut')) showShortcut('setupLauncherShortcut',info.controllerOptions.launcher || info.controllerOptions.launcherBinding);

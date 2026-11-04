@@ -7,6 +7,12 @@ Add-Type -AssemblyName System.Windows.Forms
 function Say([string]$text, [string]$icon = 'Information') {
     if (!$Quiet) { [void][System.Windows.Forms.MessageBox]::Show($text, 'LazyGaming', 'OK', $icon) } else { Write-Output $text }
 }
+function FileSha256([string]$path) {
+    $stream = [IO.File]::OpenRead($path)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $hash.Dispose(); $stream.Dispose() }
+}
 try {
     if (![Environment]::Is64BitOperatingSystem) { throw 'O LazyGaming precisa do Windows de 64 bits.' }
     $programs = if ($Root) { $Root } else { Join-Path $env:LOCALAPPDATA 'Programs' }
@@ -24,9 +30,11 @@ try {
     $release = Get-Content -LiteralPath (Join-Path $content 'release.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     foreach ($file in $release.files) {
         $path = Join-Path $content ($file.path -replace '/', '\')
-        if (!(Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256) { throw "Pacote corrompido: $($file.path). Baixe o instalador novamente." }
+        if (!(Test-Path -LiteralPath $path) -or (FileSha256 $path) -ne $file.sha256) { throw "Pacote corrompido: $($file.path). Baixe o instalador novamente." }
     }
 
+    $uninstallSource = Join-Path $PSScriptRoot 'Desinstalar-LazyGaming.ps1'
+    if (!(Test-Path -LiteralPath $uninstallSource)) { throw 'Instalador incompleto: Desinstalar-LazyGaming.ps1 ausente. Baixe o instalador novamente.' }
     New-Item -ItemType Directory -Path $programs -Force | Out-Null
     if (Test-Path -LiteralPath $target) {
         if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Recurse -Force }
@@ -34,6 +42,10 @@ try {
     }
     try { Move-Item -LiteralPath $content -Destination $target }
     catch { if (Test-Path -LiteralPath $previous) { Move-Item -LiteralPath $previous -Destination $target }; throw }
+
+    $uninstall = Join-Path $target 'Desinstalar-LazyGaming.ps1'
+    # UTF-8 com BOM: o Windows PowerShell 5.1 lê arquivos sem BOM como ANSI e corromperia os acentos.
+    [IO.File]::WriteAllText($uninstall, [IO.File]::ReadAllText($uninstallSource, [Text.UTF8Encoding]::new($false)), [Text.UTF8Encoding]::new($true))
 
     if ($SkipIntegration) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue; Write-Output "OK $($release.version) em $target"; exit 0 }
     $shell = New-Object -ComObject WScript.Shell
@@ -48,22 +60,6 @@ try {
     Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'LazyGaming.lnk') '--open-launcher' 'Abrir o launcher do LazyGaming'
 
     # Desinstalação aparece em Configurações > Aplicativos (somente este usuário).
-    $uninstall = Join-Path $target 'Desinstalar-LazyGaming.ps1'
-    Set-Content -LiteralPath $uninstall -Encoding UTF8 -Value @'
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-$target = Join-Path $env:LOCALAPPDATA 'Programs\LazyGaming'
-$exe = Join-Path $target 'LazyGaming.Host.exe'
-if (@(Get-CimInstance Win32_Process -Filter "Name='LazyGaming.Host.exe'" | Where-Object { $_.ExecutablePath -ieq $exe }).Count) {
-    [void][System.Windows.Forms.MessageBox]::Show('Saia do LazyGaming pelo ícone da área de notificação antes de desinstalar.', 'LazyGaming'); exit 1 }
-if ([System.Windows.Forms.MessageBox]::Show('Remover o LazyGaming? Suas configurações e a biblioteca em %LOCALAPPDATA%\LazyGaming são mantidas.', 'LazyGaming', 'YesNo') -ne 'Yes') { exit 0 }
-Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Programs')) 'LazyGaming') -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'LazyGaming.lnk') -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\LazyGaming' -Recurse -Force -ErrorAction SilentlyContinue
-$previous = Join-Path $env:LOCALAPPDATA 'Programs\LazyGaming.anterior'
-if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Recurse -Force }
-Start-Process -FilePath cmd.exe -ArgumentList '/c', 'timeout /t 2 >nul & rmdir /s /q "' + $target + '"' -WindowStyle Hidden
-'@
     $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\LazyGaming'
     New-Item -Path $key -Force | Out-Null
     $values = @{ DisplayName = 'LazyGaming'; DisplayVersion = [string]$release.version; Publisher = 'LazyGaming'; InstallLocation = $target; DisplayIcon = "$exe,0"; NoModify = 1; NoRepair = 1

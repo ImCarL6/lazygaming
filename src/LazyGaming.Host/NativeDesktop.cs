@@ -15,6 +15,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
     GlassWindow? form;
     Action? focusContent;
     Action? announceShown;
+    Action? applyZoom;
     // Fechar toca no host: a página oculta pode ter tarefas adiadas pelo navegador.
     readonly System.Media.SoundPlayer? closeSound = LoadSound("launcher-close.wav");
     volatile bool live;
@@ -65,13 +66,22 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 // Escala independente do display: área lógica de ~1080 de altura (limitada pela largura)
                 // em 1080p, 1440p, 4K e ultrawide, qualquer DPI do Windows; recalcula ao mover/redimensionar.
                 void ApplyZoom() {
-                    if (web.CoreWebView2 == null) return;
+                    if (web.CoreWebView2 == null || !window.Visible || window.WindowState == FormWindowState.Minimized) return;
                     var zoom = LauncherZoom(web.ClientSize.Width, web.ClientSize.Height, window.DeviceDpi);
                     if (zoom > 0 && Math.Abs(web.ZoomFactor - zoom) > 0.005) web.ZoomFactor = zoom;
                 }
-                web.SizeChanged += (_, _) => ApplyZoom();
-                window.DpiChanged += (_, _) => ApplyZoom();
-                window.VisibleChanged += (_, _) => { ApplyZoom(); RefreshSurface(); };
+                applyZoom = ApplyZoom;
+                // DPI/SizeChanged podem ocorrer no meio do layout do Form. Medir somente
+                // depois desse ciclo; nunca usar o tamanho inicial da janela oculta.
+                bool zoomQueued = false;
+                void QueueZoom() {
+                    if (!window.Visible || zoomQueued) return;
+                    zoomQueued = true;
+                    window.BeginInvoke(() => { zoomQueued = false; ApplyZoom(); });
+                }
+                web.SizeChanged += (_, _) => QueueZoom();
+                window.DpiChanged += (_, _) => QueueZoom();
+                window.VisibleChanged += (_, _) => RefreshSurface();
                 window.LocationChanged += (_, _) => RefreshSurface();
                 window.SizeChanged += (_, _) => RefreshSurface();
                 window.FormClosed += (_, _) => Application.ExitThread();
@@ -103,7 +113,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                         };
                         await core.AddScriptToExecuteOnDocumentCreatedAsync("if(window===window.top&&location.origin===" + JsonSerializer.Serialize(origin.GetLeftPart(UriPartial.Authority)) + "){Object.defineProperty(window,'LGNativeDesktop',{value:Object.freeze({background:function(enabled){chrome.webview.postMessage({type:'background',enabled:!!enabled});}})});}");
                         core.NavigationCompleted += (_, e) => {
-                            ApplyZoom();
+                            QueueZoom();
                             if (e.IsSuccess) { timer.Start(); ready.TrySetResult(window.Handle); }
                             else ready.TrySetException(new InvalidOperationException("Não foi possível carregar o painel do PC."));
                         };
@@ -112,22 +122,40 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 });
                 Application.Run();
             } catch (Exception e) { ready.TrySetException(e); }
-            finally { live = false; focusContent = null; announceShown = null; form = null; }
+            finally { live = false; focusContent = null; announceShown = null; applyZoom = null; form = null; }
         }) { IsBackground = true, Name = "LazyGaming desktop" };
         ui.SetApartmentState(ApartmentState.STA); ui.Start();
         return ready.Task.WaitAsync(TimeSpan.FromSeconds(20));
     }
     // Fator de zoom do WebView2 para a área lógica de referência (1080 de altura; 1440 de largura mínima).
     public static double LauncherZoom(int width, int height, int dpi) {
-        if (width <= 0 || height <= 0 || dpi <= 0) return 0;
+        if (width < 640 || height < 360 || dpi <= 0) return 0;
         double scale = dpi / 96.0, zoom = Math.Min(height / 1080.0, width / 1440.0) / scale;
         return Math.Clamp(Math.Round(zoom, 3), 0.25, 5);
     }
     public static bool SameOrigin(string supplied, Uri expected) => Uri.TryCreate(supplied, UriKind.Absolute, out var uri) &&
         uri.Scheme == expected.Scheme && uri.Host == expected.Host && uri.Port == expected.Port && uri.UserInfo.Length == 0;
-    public Task Show(Rectangle? bounds = null) => Dispatch(() => { if (bounds.HasValue) form!.Bounds = bounds.Value; form!.WindowState = FormWindowState.Normal; bool hidden = !form.Visible; form.Show(); form.BringToFront(); focusContent?.Invoke(); if (hidden) announceShown?.Invoke(); });
+    public Task Show(Rectangle? bounds = null) => Dispatch(() => {
+        var window = form!;
+        window.WindowState = FormWindowState.Normal;
+        if (bounds.HasValue) Place(window, bounds.Value);
+        bool hidden = !window.Visible;
+        window.Show();
+        // Show pode atualizar o DPI/layout e restaurar os bounds gerenciados.
+        // Reaplicar o destino na mesma thread antes de anunciar o primeiro quadro.
+        if (bounds.HasValue) Place(window, bounds.Value);
+        window.PerformLayout(); applyZoom?.Invoke();
+        window.BringToFront(); focusContent?.Invoke();
+        if (hidden) announceShown?.Invoke();
+    });
     public Task FocusInput() => Dispatch(() => focusContent?.Invoke());
-    public Task Align(Rectangle bounds) => Dispatch(() => { form!.WindowState = FormWindowState.Normal; form.Bounds = bounds; });
+    public Task Align(Rectangle bounds) => Dispatch(() => { form!.WindowState = FormWindowState.Normal; Place(form, bounds); form.PerformLayout(); applyZoom?.Invoke(); });
+    static void Place(Form window, Rectangle bounds) {
+        // Mudar primeiro de monitor conclui WM_DPICHANGED antes de definir o tamanho.
+        // Um único Bounds atravessando DPIs pode ter a largura sobrescrita pelo Form.
+        window.Location = bounds.Location;
+        window.Bounds = bounds;
+    }
     public Task Hide() => Dispatch(() => {
         bool visible = form!.Visible; form.Hide();
         // Nunca antes de sumir: aguarda a composição DWM que já não contém a janela.

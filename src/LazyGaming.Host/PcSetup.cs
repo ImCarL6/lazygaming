@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace LazyGaming;
 
 public sealed record ControllerDetection(string? Kind, string Name, bool Connected, bool Touchpad, bool Microphone, string Note);
-public sealed record InitialPcSetup(string DisplayPath, string ControllerSource = "auto", string? AudioDeviceId = null, bool OnlyGameDisplay = true,
+public sealed record InitialPcSetup(string DisplayPath, string ControllerSource = "auto", string? AudioDeviceId = null, bool OnlyGameDisplay = false,
     ShortcutBinding? Launcher = null, ControllerOptions? Controller = null);
 
 public static class PcSetup
@@ -33,9 +33,15 @@ public static class PcSetup
     public static bool IsSamsung(Displays.Screen screen) => screen.Available &&
         (screen.Name.Contains("Samsung",StringComparison.OrdinalIgnoreCase) ||
         Regex.IsMatch(screen.DevicePath,@"DISPLAY[#\\]SAM[0-9A-F]{4}(?:[#\\]|$)",RegexOptions.IgnoreCase));
-    public static bool SuggestSamsung(IEnumerable<Displays.Screen> screens, PcPreferences preferences, bool paired) {
-        var screen = Displays.SelectTarget(screens,preferences.DisplayPath);
-        return screen != null && IsSamsung(screen) && !preferences.SamsungHintDismissed && !preferences.TvIntegrationEnabled && !paired;
+    // Qualquer tela Samsung conectada (ativa ou não) é só um gatilho: marca/EDID não prova TV Tizen, IP ou acesso pela rede.
+    public static string[] SamsungScreens(IEnumerable<Displays.Screen> screens) => screens.Where(IsSamsung).Select(s=>s.Name).Distinct().ToArray();
+    public static bool SuggestSamsung(IEnumerable<Displays.Screen> screens, PcPreferences preferences, bool paired) =>
+        SamsungScreens(screens).Length > 0 && !preferences.SamsungHintDismissed && !preferences.TvIntegrationEnabled && !paired;
+    // Última etapa opcional do primeiro uso. Com vínculo existente, mostra o estado em vez de pedir instalação/pareamento.
+    public static object SamsungOffer(IEnumerable<Displays.Screen> screens, PcPreferences preferences, bool paired, bool lanEnabled, string[]? addresses = null) {
+        var names = SamsungScreens(screens);
+        return new { show = names.Length > 0 && (paired || !preferences.SamsungHintDismissed), screens = names, linked = paired,
+            integrationEnabled = preferences.TvIntegrationEnabled, lanEnabled, dismissed = preferences.SamsungHintDismissed, addresses = addresses ?? [] };
     }
     public static PcPreferences Complete(PcPreferences current, InitialPcSetup setup, IEnumerable<Displays.Screen> screens, IEnumerable<AudioDevice> audio) {
         if (string.IsNullOrWhiteSpace(setup.DisplayPath) || !screens.Any(s=>s.Available && s.DevicePath==setup.DisplayPath))

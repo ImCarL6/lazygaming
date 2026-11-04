@@ -143,7 +143,8 @@ async function api(path, payload) {
   if (!desktop && Date.now() - proofAt > 15000) { await proof(base); proofAt = Date.now(); }
   var method = payload === undefined ? 'GET' : 'POST', body = payload === undefined ? '' : JSON.stringify(payload);
   var time = Date.now().toString(), nonce = LGCrypto.nonce();
-  if (desktop) return request(base + path, { method: method, headers: { 'Content-Type': 'application/json' }, body: body || undefined }, /launcher\/(sync|input)/.test(path) ? 25000 : /api\/(displays|hub\/setup)$/.test(path) ? 15000 : /start$/.test(path) ? 30000 : 5000);
+  // O seletor nativo espera a escolha humana; cinco segundos não são uma falha de conexão.
+  if (desktop) return request(base + path, { method: method, headers: { 'Content-Type': 'application/json' }, body: body || undefined }, path === '/api/hub/pick' ? 600000 : /launcher\/(sync|input)/.test(path) ? 25000 : /api\/(displays|hub\/setup)$/.test(path) ? 15000 : /start$/.test(path) ? 30000 : 5000);
   return request(base + path, { method: method, headers: { 'Content-Type': 'application/json', 'X-LG-Time': time, 'X-LG-Nonce': nonce,
     'X-LG-Signature': LGCrypto.hmac(session.key, method + '\n' + path + '\n' + time + '\n' + nonce + '\n' + body) }, body: body || undefined }, /launcher\/(sync|input)/.test(path) ? 25000 : /api\/displays$/.test(path) ? 15000 : /\/(start|move-to-tv)$/.test(path) ? 30000 : 5000);
 }

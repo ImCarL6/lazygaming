@@ -143,15 +143,24 @@ public sealed class DesktopLauncher(int port, string directory, Func<nint>? game
         opening = true; ResetInput?.Invoke();
         try {
             if (native == null) { ShowWindowAsync(window, 9); await Task.Delay(150); }
+            System.Drawing.Rectangle bounds;
             using (WindowFocus.PhysicalCoordinates()) {
             // Apenas a própria janela acompanha a tela principal atual (TV durante a sessão).
-            var bounds = System.Windows.Forms.Screen.PrimaryScreen!.Bounds;
+            bounds = System.Windows.Forms.Screen.PrimaryScreen!.Bounds;
             try { if (Displays.TvReady(false)) bounds = Displays.TvBounds(); } catch (InvalidOperationException) { }
-            var style = GetWindowLongPtr(window, -16).ToInt64();
-            SetWindowLongPtr(window, -16, (nint)(style & ~0x01C40000L));
-            SetWindowPos(window, -1, bounds.X, bounds.Y, bounds.Width, bounds.Height, native == null ? 0x4060u : 0x4020u);
+            if (native == null) {
+                var style = GetWindowLongPtr(window, -16).ToInt64();
+                SetWindowLongPtr(window, -16, (nint)(style & ~0x01C40000L));
+                SetWindowPos(window, -1, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0x4060u);
             }
-            if (native != null) await native.Show();
+            }
+            if (native != null) {
+                await native.Show(bounds);
+                if (!WindowFocus.MatchesBounds(window, bounds)) {
+                    await native.Hide();
+                    throw new InvalidOperationException("O launcher não confirmou o tamanho da tela de destino. Tente abri-lo novamente.");
+                }
+            }
             WindowFocus.ActivateInputWindow(window, true);
             if (native != null) await native.FocusInput();
             // O marco de entrada pertence à janela já apresentada. Criar/mostrar

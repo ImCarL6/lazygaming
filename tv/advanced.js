@@ -45,6 +45,8 @@
     note('Carregando…');
     try { var results = await Promise.all([api('/api/hub'), api('/api/hub/integration')]); library = results[0]; integration = results[1]; note(''); }
     catch (e) { note(e.message); }
+    // Entrada da TV só quando o Windows vê alguma tela Samsung (gatilho, não prova de TV Tizen).
+    api('/api/hub/setup').then(function (s) { $('advTvSection').hidden = !(s.samsungOffer && s.samsungOffer.screens.length); }).catch(function () { $('advTvSection').hidden = true; });
     render(); focusControl($('advAddFolder'));
   }
   function close() { $('advanced').hidden = true; $('options').hidden = false; syncPointer(); focusControl($('advancedSettings')); }
@@ -69,6 +71,11 @@
   $('advReview').onclick = async function () {
     $('advanced').hidden = true; $('options').hidden = true;
     if (window.LGFirstRun && await window.LGFirstRun.start(true)) { try { await refresh(); } catch (_) { } focusSelectedGame(); }
+    else { $('options').hidden = false; focusControl($('advancedSettings')); }
+  };
+  $('advTv').onclick = async function () {
+    $('advanced').hidden = true; $('options').hidden = true;
+    if (window.LGFirstRun && await window.LGFirstRun.openTv()) focusSelectedGame();
     else { $('options').hidden = false; focusControl($('advancedSettings')); }
   };
   $('advCentral').onclick = function () { guarded(async function () { await api('/api/hub/launch', {}); note('Central aberta no navegador do PC.'); }); };

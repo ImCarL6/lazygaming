@@ -19,10 +19,24 @@ static void Assert(bool condition, string message) { if (!condition) throw new E
     Assert(Math.Abs(NativeDesktop.LauncherZoom(3440, 1440, 96) - 1.333) < .001, "ultrawide usa a altura");
     Assert(Math.Abs(NativeDesktop.LauncherZoom(1280, 1024, 96) - 0.889) < .001, "4:3/5:4 limitado pela largura");
     Assert(NativeDesktop.LauncherZoom(0, 1080, 96) == 0, "janela sem tamanho não altera o zoom");
+    Assert(NativeDesktop.LauncherZoom(300, 300, 288) == 0, "tamanho inicial do Form não altera o zoom");
     Console.WriteLine("PASS: zoom do launcher normaliza 1080p, 1440p, 4K (100%/300%), ultrawide e telas estreitas.");
 }
 var inactiveTv = new Displays.Screen("SAMSUNG", "physical-tv", 5, true, false, 3840, 2160, 60);
 Assert(Presentation.Cable([inactiveTv]).Available == true, "TV conectada inativa continua elegível a Cabo");
+{
+    // Padrão novo: outras telas ligadas; a oferta Samsung olha qualquer tela Samsung conectada, não só o destino escolhido.
+    Assert(!new InitialPcSetup("x").OnlyGameDisplay, "configuração inicial mantém outras telas ligadas por padrão");
+    var pc = new Displays.Screen("Monitor PC", @"\\?\DISPLAY#DEL1234#1", 5, true, true, 1920, 1080, 60);
+    var none = new PcPreferences(DisplayPath: pc.DevicePath);
+    Assert(PcSetup.SamsungScreens([pc]).Length == 0 && !PcSetup.SuggestSamsung([pc], none, false), "sem Samsung não há oferta");
+    Assert(PcSetup.SamsungScreens([pc, inactiveTv]).Length == 1 && PcSetup.SuggestSamsung([pc, inactiveTv], none, false), "Samsung conectada inativa, fora do destino, gera oferta");
+    Assert(PcSetup.SamsungScreens([pc, inactiveTv with { Available = false }]).Length == 0, "Samsung desconectada não gera oferta");
+    string Offer(PcPreferences p, bool paired) => System.Text.Json.JsonSerializer.Serialize(PcSetup.SamsungOffer([pc, inactiveTv], p, paired, false));
+    Assert(Offer(none, false).Contains("\"show\":true") && Offer(none with { SamsungHintDismissed = true }, false).Contains("\"show\":false"), "Agora não guarda a dispensa");
+    Assert(Offer(none with { SamsungHintDismissed = true }, true).Contains("\"linked\":true"), "vínculo existente mostra estado em vez de nova instalação");
+    Console.WriteLine("PASS: outras telas ligadas por padrão e oferta Samsung condicional.");
+}
 Assert(Presentation.Cable([inactiveTv with { Available = false }]).Available == false, "TV desconectada não oferece Cabo");
 Assert(Presentation.Cable([inactiveTv, inactiveTv with { DevicePath = "other-tv" }]).Available == null, "destino ambíguo não escolhe TV");
 bool streamRejected = false;

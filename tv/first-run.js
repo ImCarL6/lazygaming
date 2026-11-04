@@ -3,8 +3,9 @@
 (function () {
   'use strict';
   if (typeof document === 'undefined' || !document.getElementById('firstRun')) return;
-  var step = 0, info = null, library = null, scanning = false, choice = { display: '', audio: '', only: true, source: 'auto', startup: true, desktop: true, guide: true }, binding = null, edited = false;
-  var capturing = false, captureTimer = 0, pollTimer = 0, refreshTimer = 0, finishing = false, resolveDone = null, chipState = '';
+  var step = 0, info = null, library = null, scanning = false, choice = { display: '', audio: '', only: false, source: 'auto', startup: true, desktop: true, guide: true }, binding = null, edited = false;
+  var offer = null, tvOnly = false, DONE = 6;
+  var capturing = false, picking = false, captureTimer = 0, pollTimer = 0, refreshTimer = 0, finishing = false, resolveDone = null, chipState = '';
   var NAMES = {
     dualsense: { 64: 'Create', 128: 'Options', 256: 'L3', 512: 'R3', 16: 'L1', 32: 'R1', 1024: 'L2', 2048: 'R2', 1: '✕', 2: '○', 4: '□', 8: '△', 4096: 'Microfone', 8192: 'Touchpad' },
     switch: { 64: '−', 128: '+', 256: 'L3', 512: 'R3', 16: 'L', 32: 'R', 1024: 'ZL', 2048: 'ZR', 1: 'B', 2: 'A', 4: 'Y', 8: 'X' },
@@ -83,8 +84,10 @@
     finally { scanning = false; renderGames(); }
   }
   async function addFolder() {
-    if (scanning || !library) return;
+    if (scanning || picking || !library) return;
+    picking = true;
     var picked; try { picked = (await api('/api/hub/pick', { kind: 'folder' })).path; } catch (e) { $('frError').textContent = e.message; return; }
+    finally { picking = false; }
     if (!picked) return;
     if (library.preferences.folders.some(function (f) { return f.path.toLowerCase() === picked.toLowerCase(); })) { $('frGamesCount').textContent = 'Essa pasta já está na lista.'; return; }
     await saveFolders(library.preferences.folders.concat([{ path: picked, enabled: true }])); playMenuSound('confirm'); focusControl($('frNext'));
@@ -130,21 +133,53 @@
         : 'O analógico direito move o cursor; ' + names(o.leftClick || 32) + ' clica e ' + names(o.rightClick || 16) + ' faz o clique direito.';
     }
   }
+  // A etapa Samsung só existe quando o Windows vê alguma tela Samsung; contadores acompanham o total real.
+  function total() { return offer && offer.show ? 6 : 5; }
+  function renderCounters() {
+    var dots = $('frDots'), count = total() + 1;
+    while (dots.children.length > count) dots.removeChild(dots.lastChild);
+    while (dots.children.length < count) dots.append(el('li'));
+    Array.prototype.forEach.call(document.querySelectorAll('#firstRun .fr-step .fr-eyebrow'), function (n) {
+      var s = Number(n.parentNode.dataset.step); n.textContent = 'Passo ' + (s + 1) + ' de ' + total() + (s === 5 ? ' · opcional' : '');
+    });
+  }
+  function tvStep(text) { var li = el('li'); li.append(text); return li; }
+  function renderTv(guide) {
+    var o = offer || { screens: [], addresses: [] };
+    $('frTvOffer').hidden = !!guide; $('frTvGuide').hidden = !guide;
+    $('frTvScreens').textContent = o.screens.length ? 'Tela Samsung encontrada: ' + o.screens.join(', ') + '. Monitores Samsung também aparecem aqui; confirme que é uma TV com Tizen.' : '';
+    var list = $('frTvSteps'); list.textContent = '';
+    if (o.linked) {
+      list.append(tvStep('Esta TV já está pareada com o PC. Abra o LazyGaming na TV para jogar.'),
+        tvStep('Se ela não conectar, use Recuperar conexão no app da TV. Não é preciso instalar nem parear de novo.'));
+      $('frTvState').textContent = o.lanEnabled ? 'Conexão pela rede local ativa neste PC.' : 'A conexão pela rede local está desligada neste PC: ative-a na Central e reinicie o LazyGaming.';
+      return;
+    }
+    var ip = o.addresses.length ? ' (' + o.addresses.join(' ou ') + ')' : '';
+    list.append(tvStep('Confirme que é uma TV Samsung com Tizen, na mesma rede deste PC.'),
+      tvStep('Na TV, abra Apps, digite 12345 no controle, ligue o Developer Mode e informe o endereço deste PC' + ip + '. Se a TV pedir para reiniciar, reinicie-a você mesmo.'),
+      tvStep('Instale o app LazyGaming na TV pelo kit TV-opcional, com um certificado Samsung autorizado para essa TV. O assistente ainda não instala sozinho.'),
+      tvStep('Na Central, ative “Permitir conexão do app Tizen pela rede local”, salve e reinicie o LazyGaming. Gere o código e digite-o no app da TV.'));
+    $('frTvState').textContent = 'A TV só estará conectada depois do pareamento no app da TV. Enquanto isso, tudo funciona por cabo.';
+  }
   function show(next, quiet) {
-    step = Math.max(0, Math.min(5, next));
+    step = Math.max(0, Math.min(DONE, next));
+    renderCounters();
     Array.prototype.forEach.call(document.querySelectorAll('#firstRun .fr-step'), function (n) { var on = Number(n.dataset.step) === step; n.hidden = !on; if (on) { n.classList.remove('entering'); void n.offsetWidth; n.classList.add('entering'); } });
     Array.prototype.forEach.call($('frDots').children, function (d, i) { d.className = i < step ? 'done' : i === step ? 'current' : ''; });
     $('frBack').disabled = step === 0; $('frBack').classList.toggle('ghost', step === 0);
-    $('frNext').textContent = step === 4 ? 'Concluir' : 'Continuar';
-    document.querySelector('#firstRun .fr-foot').hidden = step === 5;
+    $('frNext').textContent = step === 4 && total() === 5 ? 'Concluir' : 'Continuar';
+    $('frNext').hidden = step === 5;
+    document.querySelector('#firstRun .fr-foot').hidden = step === DONE;
     $('frError').textContent = '';
     if (step === 1) { renderController(); startPolling(); } else stopPolling();
     if (step === 0) renderDisplays();
     if (step === 2) renderAudio();
     if (step === 3) loadGames();
     if (step === 4) renderSystem();
+    if (step === 5) renderTv(tvOnly);
     if (!quiet) playMenuSound('confirm');
-    var target = step === 0 ? $('frDisplays').querySelector('[aria-pressed="true"]') : step === 1 ? $('frChange') : step === 2 ? $('frAudio').querySelector('[aria-pressed="true"]') : step === 3 ? $('frAddFolder') : step === 4 ? $('frStartup') : $('frPlay');
+    var target = step === 0 ? $('frDisplays').querySelector('[aria-pressed="true"]') : step === 1 ? $('frChange') : step === 2 ? $('frAudio').querySelector('[aria-pressed="true"]') : step === 3 ? $('frAddFolder') : step === 4 ? $('frStartup') : step === 5 ? (tvOnly ? $('frTvDone') : $('frTvSetup')) : $('frPlay');
     focusControl(target || $('frNext'));
   }
   function startPolling() {
@@ -185,10 +220,12 @@
       var c = info.controller;
       try { await api('/api/hub/integration', { startWithWindows: choice.startup, desktopShortcut: choice.desktop, blockSteamGuide: choice.guide }); }
       catch (e) { $('frError').textContent = 'Atalhos: ' + e.message; }
-      await api('/api/hub/setup', { displayPath: choice.display, controllerSource: c.connected ? 'auto' : choice.source, audioDeviceId: choice.audio || null, onlyGameDisplay: choice.only,
+      // Configuração base gravada antes da etapa opcional: pular ou falhar na TV não exige refazer o resto.
+      var saved = await api('/api/hub/setup', { displayPath: choice.display, controllerSource: c.connected ? 'auto' : choice.source, audioDeviceId: choice.audio || null, onlyGameDisplay: choice.only,
         controller: Object.assign({}, options(), { launcher: binding }) });
       sentence($('frDoneText'), binding, 'launcher');
-      show(5, true);
+      offer = saved && saved.samsungOffer || null;
+      show(offer && offer.show ? 5 : DONE, true);
       try { playLauncherOpen(); } catch (_) { }
     } catch (e) { $('frError').textContent = e.message; $('frNext').textContent = 'Concluir'; }
     finally { finishing = false; $('frNext').disabled = false; $('frBack').disabled = step === 0; }
@@ -198,6 +235,14 @@
     var panel = $('firstRun'); panel.classList.add('leaving');
     setTimeout(function () { panel.hidden = true; panel.classList.remove('leaving'); if (typeof syncPointer === 'function') syncPointer(); var done = resolveDone; resolveDone = null; if (done) done(true); }, 260);
   }
+  async function leaveTv() {
+    try { if (offer && !offer.linked) await api('/api/hub/samsung-hint/dismiss', {}); } catch (_) { }
+    if (tvOnly) close(); else show(DONE);
+  }
+  $('frTvSetup').onclick = function () { renderTv(true); playMenuSound('confirm'); focusControl($('frTvDone')); };
+  $('frTvSkip').onclick = leaveTv;
+  $('frTvDone').onclick = leaveTv;
+  $('frTvCentral').onclick = function () { api('/api/hub/launch', {}).then(function () { $('frTvState').textContent = 'Central aberta no navegador do PC.'; }).catch(function (e) { $('frError').textContent = e.message; }); };
   $('frNext').onclick = function () { if (step === 4) finish(); else if (step === 0 && !choice.display) $('frError').textContent = 'Escolha a tela em que você vai jogar.'; else show(step + 1); };
   $('frBack').onclick = function () { back(); };
   $('frPlay').onclick = close;
@@ -207,14 +252,27 @@
   $('frAddFolder').onclick = addFolder; $('frScan').onclick = rescan;
   [['frStartup', 'startup'], ['frDesktop', 'desktop'], ['frSteamGuide', 'guide']].forEach(function (item) { $(item[0]).onclick = function () { choice[item[1]] = !choice[item[1]]; renderSystem(); }; });
   $('frOnlyDisplay').onclick = function () { choice.only = !choice.only; $('frOnlyDisplay').setAttribute('aria-pressed', String(choice.only)); };
-  function back() { if (finishing) return; if (capturing) { capture(); return; } if (step > 0 && step < 5) show(step - 1); }
+  function back() {
+    if (finishing) return; if (capturing) { capture(); return; }
+    if (step === 5) { if (tvOnly) close(); else if (!$('frTvGuide').hidden) { renderTv(false); focusControl($('frTvSetup')); } else show(4); return; }
+    if (step > 0 && step < 5) show(step - 1);
+  }
+  // Retomada pelo painel avançado: só o passo a passo da TV, sem refazer a configuração inicial.
+  async function openTv() {
+    if (!$('firstRun').hidden) return false;
+    try { info = await api('/api/hub/samsung-hint/resume', {}); } catch (_) { return false; }
+    offer = info.samsungOffer; tvOnly = true;
+    $('firstRun').hidden = false; glyphs(); if (typeof syncPointer === 'function') syncPointer();
+    show(5, true);
+    return new Promise(function (resolve) { resolveDone = resolve; });
+  }
   // Resolve true quando o primeiro uso terminou aqui (ou false se já estava configurado / indisponível).
   async function start(force) {
     if (!$('firstRun').hidden) return false;
     try { info = await api('/api/hub/setup'); } catch (_) { return false; }
     if (!info || !info.preferences || (info.preferences.setupCompleted && !force)) return false;
-    edited = false; library = null; step = 0;
-    choice.display = info.displayPath || ''; choice.audio = info.preferences.audioDeviceId || ''; choice.only = info.preferences.displayPath ? info.onlyGameDisplay : true;
+    edited = false; library = null; step = 0; tvOnly = false; offer = info.samsungOffer || null;
+    choice.display = info.displayPath || ''; choice.audio = info.preferences.audioDeviceId || ''; choice.only = info.preferences.displayPath ? info.onlyGameDisplay : false;
     choice.source = info.preferences.controllerSource || 'auto';
     $('firstRun').hidden = false; glyphs(); if (typeof syncPointer === 'function') syncPointer();
     api('/api/hub/integration').then(function (i) { choice.guide = i.blockSteamGuide !== false; if (force) { choice.startup = !!i.startWithWindows; choice.desktop = !!i.desktopShortcut; } if (step === 4) renderSystem(); }).catch(function () { });
@@ -233,5 +291,5 @@
     }, 2500);
     return new Promise(function (resolve) { resolveDone = resolve; });
   }
-  window.LGFirstRun = { start: start, back: back, get active() { return !$('firstRun').hidden; } };
+  window.LGFirstRun = { start: start, openTv: openTv, back: back, get active() { return !$('firstRun').hidden; } };
 }());

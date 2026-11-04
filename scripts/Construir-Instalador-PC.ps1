@@ -17,7 +17,11 @@ $stage = Join-Path $root 'setup-stage'
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item -LiteralPath $Archive -Destination (Join-Path $stage 'LazyGaming.zip')
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Instalar-LazyGaming.ps1') -Destination $stage
+# Scripts executados pelo Windows PowerShell 5.1 precisam de BOM; as fontes do repositório ficam sem BOM.
+foreach ($script in 'Instalar-LazyGaming.ps1', 'Desinstalar-LazyGaming.ps1') {
+    $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot $script), [Text.UTF8Encoding]::new($false, $true))
+    [IO.File]::WriteAllText((Join-Path $stage $script), $text, [Text.UTF8Encoding]::new($true))
+}
 # IExpress roda em 32 bits; Sysnative chama o PowerShell de 64 bits quando disponível.
 Set-Content -LiteralPath (Join-Path $stage 'install.cmd') -Encoding Ascii -Value '@echo off',
     'set "PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"',
@@ -61,12 +65,14 @@ UserQuietInstCmd=cmd /c install.cmd
 FILE0="LazyGaming.zip"
 FILE1="Instalar-LazyGaming.ps1"
 FILE2="install.cmd"
+FILE3="Desinstalar-LazyGaming.ps1"
 [SourceFiles]
 SourceFiles0=$stage\
 [SourceFiles0]
 %FILE0%=
 %FILE1%=
 %FILE2%=
+%FILE3%=
 "@
 if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
 $process = Start-Process -FilePath $iexpress -ArgumentList '/N', '/Q', $sed -Wait -PassThru
