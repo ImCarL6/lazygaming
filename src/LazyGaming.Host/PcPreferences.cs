@@ -5,7 +5,7 @@ namespace LazyGaming;
 public sealed record PcPreferences(string? DisplayPath = null, bool RestoreTvState = false,
     string ControllerSource = "auto", ControllerOptions? Controller = null, string? AudioDeviceId = null, bool Enabled = true,
     bool TvIntegrationEnabled = false, bool SetupCompleted = false, bool SamsungHintDismissed = false, bool? ConfirmBackOverride = null,
-    bool DualSenseBluetoothFeatures = true)
+    bool DualSenseBluetoothFeatures = true, bool BlockSteamGuide = true)
 {
     public ControllerOptions Controls => Controller ?? new();
     public void Validate() {

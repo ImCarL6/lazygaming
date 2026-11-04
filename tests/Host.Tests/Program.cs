@@ -10,6 +10,17 @@ if (args.Length == 3 && args[0] == "--monitor-preference-fixture") {
 }
 
 static void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
+{
+    // Área lógica do launcher: 1080 de altura em qualquer display/DPI, sem estourar em telas estreitas.
+    Assert(NativeDesktop.LauncherZoom(1920, 1080, 96) == 1, "1080p 100%");
+    Assert(NativeDesktop.LauncherZoom(3840, 2160, 96) == 2, "4K 100% não fica minúsculo");
+    Assert(Math.Abs(NativeDesktop.LauncherZoom(3840, 2160, 288) - 0.667) < .001, "4K 300% não fica gigante");
+    Assert(Math.Abs(NativeDesktop.LauncherZoom(2560, 1440, 120) - 1.067) < .001, "1440p 125%");
+    Assert(Math.Abs(NativeDesktop.LauncherZoom(3440, 1440, 96) - 1.333) < .001, "ultrawide usa a altura");
+    Assert(Math.Abs(NativeDesktop.LauncherZoom(1280, 1024, 96) - 0.889) < .001, "4:3/5:4 limitado pela largura");
+    Assert(NativeDesktop.LauncherZoom(0, 1080, 96) == 0, "janela sem tamanho não altera o zoom");
+    Console.WriteLine("PASS: zoom do launcher normaliza 1080p, 1440p, 4K (100%/300%), ultrawide e telas estreitas.");
+}
 var inactiveTv = new Displays.Screen("SAMSUNG", "physical-tv", 5, true, false, 3840, 2160, 60);
 Assert(Presentation.Cable([inactiveTv]).Available == true, "TV conectada inativa continua elegível a Cabo");
 Assert(Presentation.Cable([inactiveTv with { Available = false }]).Available == false, "TV desconectada não oferece Cabo");

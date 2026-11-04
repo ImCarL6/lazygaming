@@ -227,6 +227,7 @@ var games = new GameService(library, platform, environment);
 using var feedback = test ? null : new ControllerFeedback();
 var dependencyNotices = new NoticePolicy();
 var controllerDiagnosticGate = new object();
+var steamGuard = new SteamGuideGuard(() => library.SteamPath);
 var touchpad = new TouchpadMouse(() => !test && (environment.Active || desktop.AcceptsControllerInput), value => feedback?.Notify(value), () => { _ = Task.Run(async () => { try { await OpenConfiguredLauncher(); } catch (InvalidOperationException e) { feedback?.NotifyMessage(e.Message); } catch { feedback?.NotifyMessage("Não foi possível abrir o painel. Tente novamente."); } }); }, () => desktop.AcceptsControllerInput, controllerKeys.Push, preferences: () => pcPreferences.Current, diagnostic: ControllerDiagnostic);
 desktop.ControllerReleased = () => test || touchpad.Released;
 desktop.ResetInput = () => { controllerKeys.Clear(); touchpad.ResetNavigation(); };
@@ -502,6 +503,20 @@ object SetupSnapshot() {
         samsungHint = PcSetup.SuggestSamsung(screens,preferences,security.Paired) };
 }
 app.MapGet("/api/hub/setup", () => Results.Ok(SetupSnapshot()));
+object IntegrationSnapshot() => new { startWithWindows = !test && PcIntegration.StartsWithWindows(), desktopShortcut = !test && PcIntegration.HasDesktopShortcut(),
+    blockSteamGuide = pcPreferences.Current.BlockSteamGuide, steamGuideNote = steamGuard.ConfigNote, bigPictureClosed = steamGuard.Closed };
+app.MapGet("/api/hub/integration", () => Results.Ok(IntegrationSnapshot()));
+app.MapPost("/api/hub/integration", (HttpContext ctx) => {
+    using var body = JsonDocument.Parse((string)ctx.Items["body"]!);
+    bool? Flag(string name) => body.RootElement.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null;
+    if (!test) {
+        if (Flag("startWithWindows") is bool start) PcIntegration.SetStartWithWindows(start);
+        if (Flag("desktopShortcut") is bool shortcut) PcIntegration.SetDesktopShortcut(shortcut);
+        PcIntegration.EnsureStartMenu();
+    }
+    if (Flag("blockSteamGuide") is bool block) pcPreferences.Save(pcPreferences.Current with { BlockSteamGuide = block });
+    return Results.Ok(IntegrationSnapshot());
+});
 app.MapPost("/api/hub/controller-capture", async () => {
     await games.Rescan(() => {
         if(environment.Active || !pcPreferences.Current.Enabled)throw new InvalidOperationException("Encerre a sessão e ative o LazyGaming para gravar.");
@@ -648,6 +663,7 @@ _ = Task.Run(async () =>
     while (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
     {
         try { await games.Tick(pcPreferences.Current.Enabled); await background.Tick(); } catch { /* Estado desconhecido nunca encerra ou troca processos. */ }
+        try { if (!test) steamGuard.Tick(pcPreferences.Current.BlockSteamGuide, environment.Active || desktop.Visible); } catch { }
         await Task.Delay(750);
     }
 });

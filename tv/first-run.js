@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   if (typeof document === 'undefined' || !document.getElementById('firstRun')) return;
-  var step = 0, info = null, choice = { display: '', audio: '', only: true, source: 'auto' }, binding = null, edited = false;
+  var step = 0, info = null, library = null, scanning = false, choice = { display: '', audio: '', only: true, source: 'auto', startup: true, desktop: true, guide: true }, binding = null, edited = false;
   var capturing = false, captureTimer = 0, pollTimer = 0, refreshTimer = 0, finishing = false, resolveDone = null, chipState = '';
   var NAMES = {
     dualsense: { 64: 'Create', 128: 'Options', 256: 'L3', 512: 'R3', 16: 'L1', 32: 'R1', 1024: 'L2', 2048: 'R2', 1: '✕', 2: '○', 4: '□', 8: '△', 4096: 'Microfone', 8192: 'Touchpad' },
@@ -59,6 +59,39 @@
     list.forEach(function (item) { host.append(option(item[1], item[2], item[0] === choice.audio, function () { choice.audio = item[0]; })); });
     $('frOnlyDisplay').setAttribute('aria-pressed', String(choice.only));
   }
+  function renderGames() {
+    if (!library) { $('frSteam').textContent = 'Procurando jogos da Steam…'; return; }
+    var games = library.games.filter(function (g) { return g.enabled; }), steam = games.filter(function (g) { return g.origin === 'Steam'; });
+    var card = $('frSteam'); card.textContent = ''; card.classList.toggle('found', steam.length > 0);
+    card.append(el('strong', '', steam.length ? 'Steam encontrada' : 'Ainda não encontramos jogos da Steam'));
+    card.append(el('span', '', steam.length ? steam.length + (steam.length === 1 ? ' jogo instalado' : ' jogos instalados') : 'Se você usa a Steam, escolha a pasta da biblioteca (por exemplo SteamLibrary ou Steam\\steamapps).'));
+    if (!steam.length) { var pick = el('button', 'fr-pill small', 'Escolher pasta da Steam'); pick.type = 'button'; pick.onclick = function () { addFolder(); }; card.append(pick); }
+    var host = $('frFolders'); host.textContent = '';
+    (library.folders || []).forEach(function (folder) {
+      var row = el('div', 'fr-folder' + (folder.available ? '' : ' missing'));
+      row.append(el('span', 'fr-folder-path', folder.path), el('span', 'fr-folder-state', folder.available ? 'observando' : 'indisponível'));
+      var remove = el('button', 'fr-pill small', 'Remover'); remove.type = 'button'; remove.onclick = function () { removeFolder(folder.path); }; row.append(remove);
+      host.append(row);
+    });
+    $('frGamesCount').textContent = scanning ? 'Procurando jogos…' : games.length ? games.length + (games.length === 1 ? ' jogo pronto na biblioteca.' : ' jogos prontos na biblioteca.') : 'Nenhum jogo ainda. Você pode adicionar pastas agora ou depois.';
+  }
+  async function loadGames() { renderGames(); try { library = await api('/api/hub'); } catch (e) { $('frError').textContent = e.message; } renderGames(); }
+  async function saveFolders(folders) {
+    scanning = true; renderGames();
+    try { library = await api('/api/hub/settings', Object.assign({}, library.preferences, { folders: folders })); }
+    catch (e) { $('frError').textContent = e.message; }
+    finally { scanning = false; renderGames(); }
+  }
+  async function addFolder() {
+    if (scanning || !library) return;
+    var picked; try { picked = (await api('/api/hub/pick', { kind: 'folder' })).path; } catch (e) { $('frError').textContent = e.message; return; }
+    if (!picked) return;
+    if (library.preferences.folders.some(function (f) { return f.path.toLowerCase() === picked.toLowerCase(); })) { $('frGamesCount').textContent = 'Essa pasta já está na lista.'; return; }
+    await saveFolders(library.preferences.folders.concat([{ path: picked, enabled: true }])); playMenuSound('confirm'); focusControl($('frNext'));
+  }
+  async function removeFolder(path) { if (scanning) return; await saveFolders(library.preferences.folders.filter(function (f) { return f.path !== path; })); focusControl($('frAddFolder')); }
+  async function rescan() { if (scanning) return; scanning = true; renderGames(); try { library = await api('/api/hub/scan', {}); } catch (e) { $('frError').textContent = e.message; } finally { scanning = false; renderGames(); } }
+  function renderSystem() { [['frStartup', 'startup'], ['frDesktop', 'desktop'], ['frSteamGuide', 'guide']].forEach(function (item) { $(item[0]).setAttribute('aria-pressed', String(choice[item[1]])); }); }
   function renderController() {
     var c = info.controller, f = family();
     glyphs();
@@ -98,18 +131,20 @@
     }
   }
   function show(next, quiet) {
-    step = Math.max(0, Math.min(3, next));
+    step = Math.max(0, Math.min(5, next));
     Array.prototype.forEach.call(document.querySelectorAll('#firstRun .fr-step'), function (n) { var on = Number(n.dataset.step) === step; n.hidden = !on; if (on) { n.classList.remove('entering'); void n.offsetWidth; n.classList.add('entering'); } });
     Array.prototype.forEach.call($('frDots').children, function (d, i) { d.className = i < step ? 'done' : i === step ? 'current' : ''; });
     $('frBack').disabled = step === 0; $('frBack').classList.toggle('ghost', step === 0);
-    $('frNext').textContent = step === 2 ? 'Concluir' : 'Continuar';
-    document.querySelector('#firstRun .fr-foot').hidden = step === 3;
+    $('frNext').textContent = step === 4 ? 'Concluir' : 'Continuar';
+    document.querySelector('#firstRun .fr-foot').hidden = step === 5;
     $('frError').textContent = '';
     if (step === 1) { renderController(); startPolling(); } else stopPolling();
     if (step === 0) renderDisplays();
     if (step === 2) renderAudio();
+    if (step === 3) loadGames();
+    if (step === 4) renderSystem();
     if (!quiet) playMenuSound('confirm');
-    var target = step === 0 ? $('frDisplays').querySelector('[aria-pressed="true"]') : step === 1 ? $('frChange') : step === 2 ? $('frAudio').querySelector('[aria-pressed="true"]') : $('frPlay');
+    var target = step === 0 ? $('frDisplays').querySelector('[aria-pressed="true"]') : step === 1 ? $('frChange') : step === 2 ? $('frAudio').querySelector('[aria-pressed="true"]') : step === 3 ? $('frAddFolder') : step === 4 ? $('frStartup') : $('frPlay');
     focusControl(target || $('frNext'));
   }
   function startPolling() {
@@ -148,10 +183,12 @@
     finishing = true; $('frNext').disabled = true; $('frBack').disabled = true; $('frNext').textContent = 'Salvando…';
     try {
       var c = info.controller;
+      try { await api('/api/hub/integration', { startWithWindows: choice.startup, desktopShortcut: choice.desktop, blockSteamGuide: choice.guide }); }
+      catch (e) { $('frError').textContent = 'Atalhos: ' + e.message; }
       await api('/api/hub/setup', { displayPath: choice.display, controllerSource: c.connected ? 'auto' : choice.source, audioDeviceId: choice.audio || null, onlyGameDisplay: choice.only,
         controller: Object.assign({}, options(), { launcher: binding }) });
       sentence($('frDoneText'), binding, 'launcher');
-      show(3, true);
+      show(5, true);
       try { playLauncherOpen(); } catch (_) { }
     } catch (e) { $('frError').textContent = e.message; $('frNext').textContent = 'Concluir'; }
     finally { finishing = false; $('frNext').disabled = false; $('frBack').disabled = step === 0; }
@@ -159,29 +196,34 @@
   function close() {
     stopPolling(); endCapture(); clearInterval(refreshTimer); refreshTimer = 0;
     var panel = $('firstRun'); panel.classList.add('leaving');
-    setTimeout(function () { panel.hidden = true; panel.classList.remove('leaving'); var done = resolveDone; resolveDone = null; if (done) done(true); }, 260);
+    setTimeout(function () { panel.hidden = true; panel.classList.remove('leaving'); if (typeof syncPointer === 'function') syncPointer(); var done = resolveDone; resolveDone = null; if (done) done(true); }, 260);
   }
-  $('frNext').onclick = function () { if (step === 2) finish(); else if (step === 0 && !choice.display) $('frError').textContent = 'Escolha a tela em que você vai jogar.'; else show(step + 1); };
+  $('frNext').onclick = function () { if (step === 4) finish(); else if (step === 0 && !choice.display) $('frError').textContent = 'Escolha a tela em que você vai jogar.'; else show(step + 1); };
   $('frBack').onclick = function () { back(); };
   $('frPlay').onclick = close;
   $('frChange').onclick = capture;
   $('frDouble').onclick = function () { edited = true; binding.gesture = 'double-tap'; renderController(); };
   $('frHold').onclick = function () { edited = true; binding.gesture = 'hold'; if (!binding.holdMs) binding.holdMs = 1000; renderController(); };
+  $('frAddFolder').onclick = addFolder; $('frScan').onclick = rescan;
+  [['frStartup', 'startup'], ['frDesktop', 'desktop'], ['frSteamGuide', 'guide']].forEach(function (item) { $(item[0]).onclick = function () { choice[item[1]] = !choice[item[1]]; renderSystem(); }; });
   $('frOnlyDisplay').onclick = function () { choice.only = !choice.only; $('frOnlyDisplay').setAttribute('aria-pressed', String(choice.only)); };
-  function back() { if (finishing) return; if (capturing) { capture(); return; } if (step > 0 && step < 3) show(step - 1); }
+  function back() { if (finishing) return; if (capturing) { capture(); return; } if (step > 0 && step < 5) show(step - 1); }
   // Resolve true quando o primeiro uso terminou aqui (ou false se já estava configurado / indisponível).
-  async function start() {
+  async function start(force) {
+    if (!$('firstRun').hidden) return false;
     try { info = await api('/api/hub/setup'); } catch (_) { return false; }
-    if (!info || !info.preferences || info.preferences.setupCompleted) return false;
+    if (!info || !info.preferences || (info.preferences.setupCompleted && !force)) return false;
+    edited = false; library = null; step = 0;
     choice.display = info.displayPath || ''; choice.audio = info.preferences.audioDeviceId || ''; choice.only = info.preferences.displayPath ? info.onlyGameDisplay : true;
     choice.source = info.preferences.controllerSource || 'auto';
-    $('firstRun').hidden = false; glyphs();
+    $('firstRun').hidden = false; glyphs(); if (typeof syncPointer === 'function') syncPointer();
+    api('/api/hub/integration').then(function (i) { choice.guide = i.blockSteamGuide !== false; if (force) { choice.startup = !!i.startWithWindows; choice.desktop = !!i.desktopShortcut; } if (step === 4) renderSystem(); }).catch(function () { });
     show(0, true);
     // Telas e saídas de áudio podem mudar durante a configuração (cabo, Bluetooth).
     clearInterval(refreshTimer);
     refreshTimer = setInterval(function () {
       if ($('firstRun').hidden) { clearInterval(refreshTimer); refreshTimer = 0; return; }
-      if (finishing || capturing || step === 1 || step === 3) return;
+      if (finishing || capturing || step === 1 || step >= 3) return;
       api('/api/hub/setup').then(function (next) {
         if (!next || finishing) return;
         var screens = JSON.stringify(next.screens), audio = JSON.stringify(next.audio), changed = screens !== JSON.stringify(info.screens) || audio !== JSON.stringify(info.audio);

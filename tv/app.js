@@ -506,7 +506,7 @@ async function refresh() {
   if ($('volumeButton') && !volumeChecked) { volumeChecked = true; loadVolume(false); }
   if (result.controller) {
     mouseEnabled = result.controller.enabled;
-    if (desktop) document.documentElement.classList.toggle('mouse-navigation', mouseEnabled);
+    syncPointer();
     $('touchpadMode').textContent = 'Mouse no touchpad: ' + (mouseEnabled ? 'ligado' : 'desligado');
     $('mouseHint').textContent = mouseEnabled ? 'Mouse no touchpad · ligado' : 'Touchpad · microfone 1,5 s';
     $('touchpadStatus').textContent = result.controller.connected ? (result.controller.touchAvailable ? 'Segure o botão de microfone por 1,5 s para ligar/desligar. Deslize para mover; pressione o touchpad para clicar ou mantenha pressionado e deslize para arrastar (janelas, barras de rolagem); pressione com dois dedos para clique direito. Durante a sessão na TV. Create + Options por 1 s abrem/ocultam o launcher; dois toques no microfone também funcionam no modo completo.' : 'Create + Options por 1 s abre o launcher. Bluetooth básico: microfone e touchpad indisponíveis neste modo.') : 'DualSense não encontrado para leitura compartilhada.';
@@ -674,7 +674,7 @@ function handleRemoteNavigation(event) {
   if (handleVolumeKey(event)) return;
   var domFocus = document.activeElement;
   var active = (event.controller || !domFocus || domFocus.tagName === 'BODY') && controllerFocus && controllerFocus.isConnected ? controllerFocus : domFocus;
-  var scope = $('firstRun') && !$('firstRun').hidden ? $('firstRun') : $('transport') && !$('transport').hidden ? $('transport') : !$('modal').hidden ? $('modal') : !$('setup').hidden ? $('setup') : $('gameOptions') && !$('gameOptions').hidden ? $('gameOptions') : !$('options').hidden ? $('options') : document;
+  var scope = $('firstRun') && !$('firstRun').hidden ? $('firstRun') : $('transport') && !$('transport').hidden ? $('transport') : !$('modal').hidden ? $('modal') : !$('setup').hidden ? $('setup') : $('gameOptions') && !$('gameOptions').hidden ? $('gameOptions') : $('advanced') && !$('advanced').hidden ? $('advanced') : !$('options').hidden ? $('options') : document;
   if ([13, 37, 38, 39, 40].indexOf(event.keyCode) !== -1 && scope !== document && scope.contains && (!active || !scope.contains(active))) {
     event.preventDefault();
     var first = Array.from(scope.querySelectorAll('button:not(:disabled),input')).filter(function (e) { return e.offsetParent !== null; })[0];
@@ -693,6 +693,7 @@ function handleRemoteNavigation(event) {
     event.preventDefault();
     if (event.repeat) return;
     if ($('firstRun') && !$('firstRun').hidden) { if (window.LGFirstRun) window.LGFirstRun.back(); return; }
+    if ($('advanced') && !$('advanced').hidden) { if (window.LGAdvanced) window.LGAdvanced.close(); return; }
     if ($('transport') && !$('transport').hidden) $('cancelTransport').click();
     else if (!$('modal').hidden) $('cancel').click();
     else if (!$('setup').hidden) {
@@ -939,7 +940,7 @@ async function initialize() {
       await request(location.origin + '/desktop-session', token ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LG-Client': inputClient }, body: JSON.stringify({ token: token }) } : { headers: { 'X-LG-Client': inputClient } });
       desktop = true; localStorage.setItem('desktop-client', 'true'); session = { desktop: true }; base = location.origin;
       if ($('pcHubSection')) $('pcHubSection').hidden = false;
-      $('streamShortcut').hidden = true; $('streamSettings').hidden = true;
+      $('streamShortcut').hidden = true; $('streamSettings').hidden = true; if ($('advancedEntry')) $('advancedEntry').hidden = false;
       document.documentElement.classList.add('controller-navigation', 'desktop-launcher'); prepareLauncherSounds(); renderPadGlyphs(null);
       history.replaceState(null, '', location.pathname); document.title = 'LazyGaming — PC';
       var back = button('Ocultar launcher', function () { return api('/api/launcher/hide', {}); }); back.id = 'returnGame'; $('dockActions').appendChild(back);
@@ -973,9 +974,14 @@ async function nativeControllerLoop() {
 nativeControllerLoop(); initialize();
 
 var cursorIdleTimer;
+// Mouse físico liberado no primeiro uso e nas configurações avançadas (instalação é feita com mouse).
+function panelOpen(id) { var node = document.getElementById ? document.getElementById(id) : null; return !!node && !node.hidden; }
+function pointerAllowed() { return mouseEnabled || panelOpen('firstRun') || panelOpen('advanced'); }
+function syncPointer() { if (desktop) document.documentElement.classList.toggle('mouse-navigation', pointerAllowed()); }
 document.addEventListener('mousemove', function (event) {
   if (desktop) {
-    if (!mouseEnabled || (!event.movementX && !event.movementY)) return;
+    if (!pointerAllowed() || (!event.movementX && !event.movementY)) return;
+    document.documentElement.classList.add('mouse-navigation');
     document.documentElement.classList.remove('controller-navigation', 'cursor-idle');
     clearTimeout(cursorIdleTimer);
     cursorIdleTimer = setTimeout(function () { document.documentElement.classList.add('cursor-idle'); }, 1800);

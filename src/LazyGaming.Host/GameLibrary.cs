@@ -18,6 +18,7 @@ public sealed class GameLibrary
     public Dictionary<string, VdfNode> ArtworkMetadata { get; private set; } = [];
     public GameMetadataStore Metadata { get; }
     readonly string[] localFolders;
+    readonly bool discoverSteam;
     public GameLibrary(string directory, bool test = false, string? steamPath = null, IEnumerable<string>? nonSteamFolders = null, bool discoverChildren = false)
     {
         Directory = directory;
@@ -26,6 +27,7 @@ public sealed class GameLibrary
         // Um filho por instalação; reavaliado a cada busca para descobrir jogos novos.
         localFolders = nonSteamFolders?.ToArray() ?? [@"C:\Joguetes"];
         scanChildren = nonSteamFolders == null || discoverChildren;
+        discoverSteam = !test && steamPath == null;
         SteamPath = steamPath != null ? Path.GetFullPath(steamPath) : test ? Path.Combine(directory, "simulated-steam") : FindSteam();
         if (test) {
             var fixtures = Path.Combine(directory, "simulated-games"); System.IO.Directory.CreateDirectory(fixtures);
@@ -44,7 +46,24 @@ public sealed class GameLibrary
         using var machine = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Valve\Steam");
         using var machine64 = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Valve\Steam");
         var fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam");
-        return ChooseSteam([user?.GetValue("SteamPath") as string, machine?.GetValue("InstallPath") as string, machine64?.GetValue("InstallPath") as string, fallback]) ?? fallback;
+        return ChooseSteam(new[] { user?.GetValue("SteamPath") as string, machine?.GetValue("InstallPath") as string, machine64?.GetValue("InstallPath") as string, fallback }.Concat(CommonSteamRoots())) ?? fallback;
+    }
+    // Caminhos mais comuns de instalação/biblioteca Steam em todos os discos fixos (sem varredura profunda).
+    static readonly string[] SteamNames = ["Steam", "SteamLibrary", "Steam Library", "SteamGames", @"Program Files (x86)\Steam", @"Program Files\Steam", @"Games\Steam", @"Games\SteamLibrary", @"Jogos\Steam", @"Jogos\SteamLibrary", @"Programas\Steam"];
+    public static IEnumerable<string> CommonSteamRoots() {
+        IEnumerable<string> drives;
+        try { drives = DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady).Select(d => d.RootDirectory.FullName).ToArray(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { yield break; }
+        foreach (var drive in drives) foreach (var name in SteamNames) yield return Path.Combine(drive, name);
+    }
+    // Biblioteca Steam a partir de uma pasta escolhida: a raiz, a própria steamapps ou steamapps\common.
+    public static string? SteamLibraryOf(string folder) {
+        try {
+            var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
+            foreach (var candidate in new[] { full, Path.GetDirectoryName(full), Path.GetDirectoryName(Path.GetDirectoryName(full) ?? "") })
+                if (!string.IsNullOrEmpty(candidate) && System.IO.Directory.Exists(Path.Combine(candidate, "steamapps")) && System.IO.Directory.EnumerateFiles(Path.Combine(candidate, "steamapps"), "appmanifest_*.acf").Any()) return candidate;
+        } catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        return null;
     }
     static string Compact(string text) => Regex.Replace(text.ToLowerInvariant(), "[^a-z0-9]", "");
     public static bool IsHelper(string name) => Regex.IsMatch(name, "crash|unins|setup|install|server|anticheat|redist|dxsetup|webhelper|unitycrash|vc_redist|_xlate(?:\\.exe)?$|shader.*compil", RegexOptions.IgnoreCase);
@@ -99,6 +118,8 @@ public sealed class GameLibrary
         var folders = Path.Combine(SteamPath, "steamapps", "libraryfolders.vdf");
         if (File.Exists(folders)) foreach (var entry in VdfNode.TextFile(File.ReadAllText(folders)).Child("libraryfolders").Values.OfType<VdfNode>())
             if (!string.IsNullOrEmpty(entry.Text("path"))) libraries.Add(Path.GetFullPath(entry.Text("path")));
+        if (discoverSteam) foreach (var root in CommonSteamRoots()) if (SteamLibraryOf(root) is string found) libraries.Add(found);
+        foreach (var folder in preferences.Folders.Where(f => f.Enabled)) if (SteamLibraryOf(folder.Path) is string chosen) libraries.Add(chosen);
         foreach (var library in libraries)
         {
             var apps = Path.Combine(library, "steamapps"); if (!System.IO.Directory.Exists(apps)) continue;

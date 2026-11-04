@@ -142,8 +142,11 @@ public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enr
             var result = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
             var thread = new Thread(() => {
                 try {
-                    if (request.Kind == "folder") { using var dialog = new FolderBrowserDialog { Description = "Escolha a pasta dos jogos", UseDescriptionForTitle = true }; result.SetResult(dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedPath : null); }
-                    else { using var dialog = new OpenFileDialog { Filter = request.Kind switch { "executable" => "Jogo (*.exe)|*.exe", "manifest" => "Ficha de jogo (*.json)|*.json", "image" => "Imagens|*.jpg;*.jpeg;*.png;*.webp", _ => "Conteúdo do jogo|*.nup;main" } }; result.SetResult(dialog.ShowDialog() == DialogResult.OK ? dialog.FileName : null); }
+                    // Dono sempre à frente: o launcher em tela cheia é TopMost e esconderia a janela de escolha.
+                    using var owner = new Form { TopMost = true, ShowInTaskbar = false, FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.CenterScreen, Size = new System.Drawing.Size(1, 1), Opacity = 0 };
+                    owner.Show(); owner.Activate();
+                    if (request.Kind == "folder") { using var dialog = new FolderBrowserDialog { Description = "Escolha a pasta dos jogos", UseDescriptionForTitle = true }; result.SetResult(dialog.ShowDialog(owner) == DialogResult.OK ? dialog.SelectedPath : null); }
+                    else { using var dialog = new OpenFileDialog { Filter = request.Kind switch { "executable" => "Jogo (*.exe)|*.exe", "manifest" => "Ficha de jogo (*.json)|*.json", "image" => "Imagens|*.jpg;*.jpeg;*.png;*.webp", _ => "Conteúdo do jogo|*.nup;main" } }; result.SetResult(dialog.ShowDialog(owner) == DialogResult.OK ? dialog.FileName : null); }
                 } catch (Exception e) { result.TrySetException(e); }
             });
             thread.SetApartmentState(ApartmentState.STA); thread.IsBackground = true; thread.Start();
