@@ -4,6 +4,10 @@ using System.Net.Sockets;
 using System.Text.Json;
 using LazyGaming;
 
+// App Windows sem janela de console (atalhos/instalador). Comandos de diagnóstico rodados num terminal
+// continuam imprimindo nele; saída redirecionada (scripts/testes) já funciona sem isto.
+HostConsole.AttachToParentTerminal();
+
 if (args.Contains("--package-version")) {
     Console.WriteLine(typeof(PcPreferences).Assembly.GetName().Version!.ToString(3)); return;
 }
@@ -653,3 +657,10 @@ app.Lifetime.ApplicationStopping.Register(desktop.Close);
 app.Lifetime.ApplicationStopped.Register(() => (platform as IDisposable)?.Dispose());
 await app.RunAsync();
 record PairRequest(string Code);
+static class HostConsole {
+    public static void AttachToParentTerminal() {
+        if (Console.IsOutputRedirected) return;
+        try { AttachConsole(-1); } catch (EntryPointNotFoundException) { }
+    }
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern bool AttachConsole(int process);
+}

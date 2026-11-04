@@ -4,7 +4,8 @@
     <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.23.3</Version>
+    <Version>0.23.4</Version>
+    <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup><FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" /></ItemGroup>

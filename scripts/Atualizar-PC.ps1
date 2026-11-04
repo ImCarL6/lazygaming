@@ -72,7 +72,7 @@ foreach ($path in @($stage,$backup)) { if ((Split-Path -Parent ([IO.Path]::GetFu
 Move-Item -LiteralPath $target -Destination $backup
 try {
     Move-Item -LiteralPath $stage -Destination $target
-    $versionOutput = & (Join-Path $target 'LazyGaming.Host.exe') --package-version
+    $versionOutput = & (Join-Path $target 'LazyGaming.Host.exe') --package-version | Out-String
     if ($LASTEXITCODE -ne 0 -or ([string]$versionOutput).Trim() -ne $next.version) { throw 'O novo executavel nao confirmou a versao.' }
 } catch {
     if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination ($stage + '.failed') }
