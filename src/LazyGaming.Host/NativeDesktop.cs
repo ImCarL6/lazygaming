@@ -15,6 +15,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
     GlassWindow? form;
     Action? focusContent;
     Action? announceShown;
+    Action? announceHidden;
     Action? applyZoom;
     // Fechar toca no host: a página oculta pode ter tarefas adiadas pelo navegador.
     readonly System.Media.SoundPlayer? closeSound = LoadSound("launcher-close.wav");
@@ -33,6 +34,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 focusContent = () => { if (WindowFocus.IsForeground(window.Handle)) web.Focus(); };
                 // A página toca o som no primeiro quadro desenhado depois de visível (requestAnimationFrame).
                 announceShown = () => { try { web.CoreWebView2?.PostWebMessageAsJson("{\"type\":\"launcher-shown\"}"); } catch (InvalidOperationException) { } };
+                announceHidden = () => { try { web.CoreWebView2?.PostWebMessageAsJson("{\"type\":\"launcher-hidden\"}"); } catch (InvalidOperationException) { } };
                 window.Controls.Add(web); window.Owner = surface;
                 window.Activated += (_, _) => web.Focus();
                 using var timer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -57,7 +59,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 void RefreshSurface() {
                     bool active = false;
                     try { active = desired && window.Visible && window.WindowState != FormWindowState.Minimized && surface.Present(gameWindow(), window.Bounds); }
-                    catch (Exception e) { issue = e.GetType().Name + ":" + e.HResult; }
+                    catch (Exception e) { RuntimeDiagnostics.Report("launcher", "background-failed", e); issue = e.GetType().Name + ":" + e.HResult; }
                     if (!active) surface.Clear(); else dimensions = surface.Dimensions;
                     if (live == active) return;
                     live = active;
@@ -118,10 +120,10 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                             else ready.TrySetException(new InvalidOperationException("Não foi possível carregar o painel do PC."));
                         };
                         core.Navigate(url);
-                    } catch (Exception e) { ready.TrySetException(new InvalidOperationException("Não foi possível preparar o painel nativo do PC.", e)); window.Close(); }
+                    } catch (Exception e) { RuntimeDiagnostics.Report("launcher", "prepare-failed", e); ready.TrySetException(new InvalidOperationException("Não foi possível preparar o painel nativo do PC.", e)); window.Close(); }
                 });
                 Application.Run();
-            } catch (Exception e) { ready.TrySetException(e); }
+            } catch (Exception e) { RuntimeDiagnostics.Report("launcher", "open-failed", e); ready.TrySetException(e); }
             finally { live = false; focusContent = null; announceShown = null; applyZoom = null; form = null; }
         }) { IsBackground = true, Name = "LazyGaming desktop" };
         ui.SetApartmentState(ApartmentState.STA); ui.Start();
@@ -157,7 +159,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
         window.Bounds = bounds;
     }
     public Task Hide() => Dispatch(() => {
-        bool visible = form!.Visible; form.Hide();
+        bool visible = form!.Visible; announceHidden?.Invoke(); form.Hide();
         // Nunca antes de sumir: aguarda a composição DWM que já não contém a janela.
         if (visible && closeSound != null) _ = Task.Run(() => { try { DwmFlush(); closeSound.Play(); } catch { } });
     });

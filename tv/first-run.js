@@ -143,24 +143,80 @@
       var s = Number(n.parentNode.dataset.step); n.textContent = 'Passo ' + (s + 1) + ' de ' + total() + (s === 5 ? ' · opcional' : '');
     });
   }
-  function tvStep(text) { var li = el('li'); li.append(text); return li; }
+  // Passo a passo da TV com estado real do PC: cada item vem da verificação do auxiliar, nunca de suposição.
+  var tv = null, tvTimer = 0, tvCode = null, tvPhase = '';
+  var MARK = { ok: '✓', fail: '!', running: '…', pending: '·' };
+  function tvItem(step) { var li = el('li', 'fr-tv-' + step.state); li.append(el('b', 'fr-tv-mark', MARK[step.state] || '·'), el('span', '', step.text)); return li; }
   function renderTv(guide) {
     var o = offer || { screens: [], addresses: [] };
     $('frTvOffer').hidden = !!guide; $('frTvGuide').hidden = !guide;
     $('frTvScreens').textContent = o.screens.length ? 'Tela Samsung encontrada: ' + o.screens.join(', ') + '. Monitores Samsung também aparecem aqui; confirme que é uma TV com Tizen.' : '';
+    if (!guide) { stopTv(); return; }
     var list = $('frTvSteps'); list.textContent = '';
-    if (o.linked) {
-      list.append(tvStep('Esta TV já está pareada com o PC. Abra o LazyGaming na TV para jogar.'),
-        tvStep('Se ela não conectar, use Recuperar conexão no app da TV. Não é preciso instalar nem parear de novo.'));
-      $('frTvState').textContent = o.lanEnabled ? 'Conexão pela rede local ativa neste PC.' : 'A conexão pela rede local está desligada neste PC: ative-a na Central e reinicie o LazyGaming.';
-      return;
+    var t = tv, status = t && t.status, steps = status && status.steps || [];
+    if (!t) list.append(tvItem({ state: 'running', text: 'Procurando a TV na rede…' }));
+    steps.forEach(function (step) { list.append(tvItem(step)); });
+    if (t && status && status.busy) list.append(tvItem({ state: 'running', text: status.phase === 'installing' ? 'Instalando o LazyGaming na TV…' : 'Verificando…' }));
+    var toolsMissing = status && status.phase === 'tools-missing', certMissing = status && status.phase === 'profile-missing', dl = t && t.download || { phase: 'idle' };
+    if (toolsMissing && t.searchingTools) list.append(tvItem({ state: 'running', text: 'Procurando o Tizen Studio neste PC…' }));
+    var DL = { downloading: 'Baixando o instalador oficial da Samsung… ' + Math.floor(100 * (dl.received || 0) / (dl.total || 1)) + '%', verifying: 'Conferindo a assinatura digital…',
+      installing: 'Instalando o Tizen Studio em ' + (t && t.installPath || '') + '… confirme a permissão do Windows se ela aparecer', installed: 'Tizen Studio instalado',
+      opened: 'Instalador aberto: siga as telas dele', failed: dl.error || 'Falha no download', 'install-failed': dl.error || 'A instalação não terminou' };
+    if (dl.phase !== 'idle' && (toolsMissing || dl.phase === 'installed')) list.append(tvItem({ state: /failed/.test(dl.phase) ? 'fail' : /installed|opened/.test(dl.phase) ? 'ok' : 'running', text: DL[dl.phase] || '' }));
+    var cert = t && t.certificate || { phase: 'idle' };
+    var CERT = { login: 'Entre na sua conta Samsung na página que abriu no navegador…', creating: 'Criando os certificados de autor e de distribuidor desta TV…',
+      registering: 'Registrando o perfil de assinatura…', done: 'Certificado Samsung criado (guardado em ' + (cert.folder || '') + ')', failed: cert.error || 'Não foi possível criar o certificado' };
+    if (cert.phase !== 'idle' && (certMissing || cert.phase === 'done')) list.append(tvItem({ state: cert.phase === 'failed' ? 'fail' : cert.phase === 'done' ? 'ok' : 'running', text: CERT[cert.phase] || '' }));
+    var dlBusy = /downloading|verifying|installing/.test(dl.phase), certBusy = /login|creating|registering/.test(cert.phase);
+    var installed = status && status.phase === 'installed';
+    if (installed) list.append(tvItem({ state: t.paired ? 'ok' : 'running', text: t.paired ? 'TV pareada com este PC' : 'Pareando sozinho assim que o LazyGaming abrir na TV…' }));
+    var note = '';
+    if (t && t.restartRequired) note = 'Para a TV encontrar este PC, o LazyGaming precisa reiniciar. Seus jogos e configurações continuam.';
+    else if (toolsMissing && !dlBusy) note = 'O LazyGaming baixa o Tizen Studio do site oficial da Samsung e instala sozinho. Ao instalar, você aceita a licença do Tizen Studio; o Windows pede permissão uma vez. Se ele já estiver instalado em outro lugar, escolha a pasta.';
+    else if (certMissing && !certBusy) note = 'O LazyGaming cria o certificado da Samsung para esta TV: você só entra na sua conta Samsung na página oficial (a senha não passa pelo LazyGaming). Se preferir, use o Certificate Manager com o DUID abaixo.';
+    else if (status && status.message && !dlBusy && !certBusy) note = status.message + (status.help ? ' ' + status.help : '');
+    else if (installed && !t.paired) note = tvCode ? '' : 'O app abre na TV e se conecta sozinho, sem código. Se ele não conectar, use Mostrar código.';
+    else if (installed) note = 'Tudo pronto. Abra o LazyGaming na TV para jogar.';
+    else if (t && !status.busy) note = 'O LazyGaming continua tentando sozinho enquanto esta opção estiver ligada. Tudo funciona por cabo enquanto isso.';
+    $('frTvState').textContent = note;
+    var duid = certMissing && status.duid;
+    $('frTvCode').hidden = !tvCode && !duid;
+    if (tvCode) { $('frTvCodeValue').textContent = tvCode.code; $('frTvCodeHint').textContent = 'Endereço do PC: ' + tvCode.addresses.join(' ou ') + ' · válido por 5 minutos'; }
+    else if (duid) { $('frTvCodeValue').textContent = duid; $('frTvCodeHint').textContent = 'DUID desta TV · use no certificado de distribuição'; }
+    $('frTvCode').classList.toggle('duid', !tvCode && !!duid);
+    $('frTvDownload').hidden = !toolsMissing || dlBusy;
+    $('frTvDownload').textContent = /failed/.test(dl.phase) ? 'Tentar instalar de novo' : 'Instalar Tizen Studio automaticamente';
+    $('frTvInstaller').hidden = !(toolsMissing && !dlBusy && t.installerReady && /failed|opened/.test(dl.phase));
+    $('frTvSamsung').hidden = !certMissing || certBusy;
+    $('frTvSamsung').textContent = cert.phase === 'failed' ? 'Tentar criar o certificado de novo' : 'Criar certificado com minha conta Samsung';
+    $('frTvCert').hidden = !(certMissing && status.certificateManager) || certBusy;
+    $('frTvCert').classList.remove('primary');
+    $('frTvPkg').hidden = !(certMissing && status.packageManager) || certBusy;
+    $('frTvCopy').hidden = !duid || certBusy;
+    $('frTvRestart').hidden = !(t && t.restartRequired);
+    $('frTvPair').hidden = !(installed && !(t && t.restartRequired));
+    $('frTvPair').textContent = t && t.paired ? 'Parear outra vez' : 'Mostrar código';
+    $('frTvTools').hidden = !(status && status.phase === 'tools-missing');
+    $('frTvRetry').hidden = !t || !!(status && status.busy) || installed && t.paired;
+  }
+  function stopTv() { clearTimeout(tvTimer); tvTimer = 0; }
+  async function pollTv() {
+    stopTv();
+    if ($('firstRun').hidden || step !== 5 || $('frTvGuide').hidden) return;
+    try { tv = await api('/api/hub/tv-install'); } catch (e) { $('frError').textContent = e.message; }
+    if (step === 5 && !$('frTvGuide').hidden) {
+      var keep = document.activeElement; renderTv(true);
+      // Mudou a etapa: foco na ação principal visível; senão mantém onde o usuário estava.
+      var phase = tv && tv.status ? tv.status.phase + '|' + (tv.restartRequired ? 'r' : '') : '';
+      var main = ['frTvRestart', 'frTvDownload', 'frTvSamsung', 'frTvPair'].map($).filter(function (b) { return !b.hidden; })[0];
+      if (phase !== tvPhase && main) focusControl(main); else if (keep && keep.offsetParent === null) focusControl(main || $('frTvDone'));
+      tvPhase = phase;
     }
-    var ip = o.addresses.length ? ' (' + o.addresses.join(' ou ') + ')' : '';
-    list.append(tvStep('Confirme que é uma TV Samsung com Tizen, na mesma rede deste PC.'),
-      tvStep('Na TV, abra Apps, digite 12345 no controle, ligue o Developer Mode e informe o endereço deste PC' + ip + '. Se a TV pedir para reiniciar, reinicie-a você mesmo.'),
-      tvStep('Instale o app LazyGaming na TV pelo kit TV-opcional, com um certificado Samsung autorizado para essa TV. O assistente ainda não instala sozinho.'),
-      tvStep('Na Central, ative “Permitir conexão do app Tizen pela rede local”, salve e reinicie o LazyGaming. Gere o código e digite-o no app da TV.'));
-    $('frTvState').textContent = 'A TV só estará conectada depois do pareamento no app da TV. Enquanto isso, tudo funciona por cabo.';
+    tvTimer = setTimeout(pollTv, tv && (tv.status && tv.status.busy || tv.download && /downloading|verifying|installing/.test(tv.download.phase) || tv.certificate && /login|creating|registering/.test(tv.certificate.phase)) ? 1000 : 3000);
+  }
+  async function tvAction(action, extra) {
+    try { tv = await api('/api/hub/tv-install', Object.assign({ action: action }, extra || {})); $('frError').textContent = ''; } catch (e) { $('frError').textContent = e.message; }
+    renderTv(true); pollTv();
   }
   function show(next, quiet) {
     step = Math.max(0, Math.min(DONE, next));
@@ -177,7 +233,7 @@
     if (step === 2) renderAudio();
     if (step === 3) loadGames();
     if (step === 4) renderSystem();
-    if (step === 5) renderTv(tvOnly);
+    if (step === 5) { renderTv(tvOnly); if (tvOnly) pollTv(); } else stopTv();
     if (!quiet) playMenuSound('confirm');
     var target = step === 0 ? $('frDisplays').querySelector('[aria-pressed="true"]') : step === 1 ? $('frChange') : step === 2 ? $('frAudio').querySelector('[aria-pressed="true"]') : step === 3 ? $('frAddFolder') : step === 4 ? $('frStartup') : step === 5 ? (tvOnly ? $('frTvDone') : $('frTvSetup')) : $('frPlay');
     focusControl(target || $('frNext'));
@@ -236,13 +292,39 @@
     setTimeout(function () { panel.hidden = true; panel.classList.remove('leaving'); if (typeof syncPointer === 'function') syncPointer(); var done = resolveDone; resolveDone = null; if (done) done(true); }, 260);
   }
   async function leaveTv() {
+    stopTv(); tvCode = null;
     try { if (offer && !offer.linked) await api('/api/hub/samsung-hint/dismiss', {}); } catch (_) { }
     if (tvOnly) close(); else show(DONE);
   }
-  $('frTvSetup').onclick = function () { renderTv(true); playMenuSound('confirm'); focusControl($('frTvDone')); };
+  $('frTvSetup').onclick = function () { tv = null; tvCode = null; renderTv(true); focusControl($('frTvDone')); tvAction('enable'); };
   $('frTvSkip').onclick = leaveTv;
   $('frTvDone').onclick = leaveTv;
-  $('frTvCentral').onclick = function () { api('/api/hub/launch', {}).then(function () { $('frTvState').textContent = 'Central aberta no navegador do PC.'; }).catch(function (e) { $('frError').textContent = e.message; }); };
+  $('frTvRetry').onclick = function () { tvAction('check'); };
+  $('frTvRestart').onclick = function () {
+    $('frTvState').textContent = 'Reiniciando o LazyGaming…'; $('frTvRestart').disabled = true;
+    api('/api/hub/restart', {}).catch(function (e) { $('frError').textContent = e.message; $('frTvRestart').disabled = false; });
+  };
+  $('frTvPair').onclick = function () {
+    if (tv && tv.paired && $('frTvPair').dataset.confirm !== '1') { $('frTvPair').dataset.confirm = '1'; $('frTvState').textContent = 'Parear de novo substitui o vínculo atual. Para a mesma TV, prefira Recuperar conexão no app da TV. Aperte de novo para confirmar.'; return; }
+    $('frTvPair').dataset.confirm = '';
+    fetch(location.origin + '/api/local-pairing', { method: 'POST' }).then(function (r) { if (!r.ok) throw Error('Não foi possível gerar o código.'); return r.json(); })
+      .then(function (r) { tvCode = r; renderTv(true); setTimeout(function () { tvCode = null; if (step === 5) renderTv(true); }, r.expiresIn * 1000); })
+      .catch(function (e) { $('frError').textContent = e.message; });
+  };
+  $('frTvDownload').onclick = function () { tvAction('download-tools'); };
+  $('frTvInstaller').onclick = function () { tvAction('open-installer'); };
+  $('frTvSamsung').onclick = function () { tvAction('samsung-certificate'); };
+  $('frTvCert').onclick = function () { tvAction('open-tool', { tool: 'certificate-manager' }); };
+  $('frTvPkg').onclick = function () { tvAction('open-tool', { tool: 'package-manager' }); };
+  $('frTvCopy').onclick = function () {
+    var text = tv && tv.status && tv.status.duid; if (!text) return;
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { $('frTvState').textContent = 'DUID copiado.'; }).catch(function () { $('frTvState').textContent = 'DUID: ' + text; });
+  };
+  $('frTvTools').onclick = function () {
+    if (picking) return; picking = true;
+    api('/api/hub/pick', { kind: 'folder' }).then(function (r) { if (r.path) return tvAction('tools', { path: r.path }); })
+      .catch(function (e) { $('frError').textContent = e.message; }).finally(function () { picking = false; });
+  };
   $('frNext').onclick = function () { if (step === 4) finish(); else if (step === 0 && !choice.display) $('frError').textContent = 'Escolha a tela em que você vai jogar.'; else show(step + 1); };
   $('frBack').onclick = function () { back(); };
   $('frPlay').onclick = close;
@@ -254,14 +336,15 @@
   $('frOnlyDisplay').onclick = function () { choice.only = !choice.only; $('frOnlyDisplay').setAttribute('aria-pressed', String(choice.only)); };
   function back() {
     if (finishing) return; if (capturing) { capture(); return; }
-    if (step === 5) { if (tvOnly) close(); else if (!$('frTvGuide').hidden) { renderTv(false); focusControl($('frTvSetup')); } else show(4); return; }
+    if (step === 5) { if (tvOnly) { stopTv(); close(); } else if (!$('frTvGuide').hidden) { renderTv(false); focusControl($('frTvSetup')); } else show(4); return; }
     if (step > 0 && step < 5) show(step - 1);
   }
   // Retomada pelo painel avançado: só o passo a passo da TV, sem refazer a configuração inicial.
   async function openTv() {
     if (!$('firstRun').hidden) return false;
     try { info = await api('/api/hub/samsung-hint/resume', {}); } catch (_) { return false; }
-    offer = info.samsungOffer; tvOnly = true;
+    offer = info.samsungOffer; tvOnly = true; tv = null; tvCode = null;
+    api('/api/hub/tv-setup/opened', {}).catch(function () { });
     $('firstRun').hidden = false; glyphs(); if (typeof syncPointer === 'function') syncPointer();
     show(5, true);
     return new Promise(function (resolve) { resolveDone = resolve; });
@@ -270,6 +353,7 @@
   async function start(force) {
     if (!$('firstRun').hidden) return false;
     try { info = await api('/api/hub/setup'); } catch (_) { return false; }
+    if (info && info.preferences && info.preferences.setupCompleted && !force && info.tvSetupResume) return openTv();
     if (!info || !info.preferences || (info.preferences.setupCompleted && !force)) return false;
     edited = false; library = null; step = 0; tvOnly = false; offer = info.samsungOffer || null;
     choice.display = info.displayPath || ''; choice.audio = info.preferences.audioDeviceId || ''; choice.only = info.preferences.displayPath ? info.onlyGameDisplay : false;

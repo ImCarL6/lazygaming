@@ -130,6 +130,107 @@ public static class Audio
         });
     }
     public static int StepVolume(int current, int direction) => Math.Clamp(direction > 0 ? current / 5 * 5 + 5 : (current + 4) / 5 * 5 - 5, 0, 100);
+
+    // Volume só do jogo: sessões de áudio do Windows (o mesmo mixer de volume de todo Windows 10/11) dos processos do
+    // jogo, em todas as saídas ativas (fone, caixas, TV). Não toca em outros apps (Discord, navegador) nem no volume geral.
+    public record AppVolume(int Level, bool Muted);
+    public static AppVolume? SessionVolume(Func<int, bool> match) => WithSessions(match, null);
+    public static AppVolume? SetSessionVolume(Func<int, bool> match, int level) => WithSessions(match, Math.Clamp(level, 0, 100));
+    static AppVolume? WithSessions(Func<int, bool> match, int? set) {
+        var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+        try {
+            if (enumerator.EnumAudioEndpoints(0, 1, out var devices) != 0) return null;
+            try {
+                if (devices.GetCount(out var deviceCount) != 0) return null;
+                AppVolume? result = null;
+                for (uint d = 0; d < deviceCount; d++) {
+                    if (devices.Item(d, out var device) != 0) continue;
+                    try {
+                        var found = DeviceSessions(device, match, set);
+                        if (found != null && (result == null || found.Level > result.Level)) result = found;
+                    }
+                    catch (COMException) { } // saída removida durante a leitura: ignora só ela
+                    finally { Marshal.ReleaseComObject(device); }
+                }
+                return result;
+            } finally { Marshal.ReleaseComObject(devices); }
+        } finally { Marshal.ReleaseComObject(enumerator); }
+    }
+    static AppVolume? DeviceSessions(IMMDevice device, Func<int, bool> match, int? set) {
+        var iid = typeof(IAudioSessionManager2).GUID;
+        Marshal.ThrowExceptionForHR(device.Activate(ref iid, 23, 0, out var pointer));
+        var manager = (IAudioSessionManager2)Marshal.GetObjectForIUnknown(pointer); Marshal.Release(pointer);
+        try {
+            Marshal.ThrowExceptionForHR(manager.GetSessionEnumerator(out var sessions));
+            try {
+                Marshal.ThrowExceptionForHR(sessions.GetCount(out var count));
+                AppVolume? result = null;
+                for (var i = 0; i < count; i++) {
+                    if (sessions.GetSession(i, out var control) != 0) continue;
+                    try {
+                        if (control is not IAudioSessionControl2 control2 || control2.GetProcessId(out var pid) != 0 || pid == 0 || !match((int)pid)) continue;
+                        var unknown = Marshal.GetIUnknownForObject(control); var simpleId = typeof(ISimpleAudioVolume).GUID;
+                        var hr = Marshal.QueryInterface(unknown, ref simpleId, out var simplePointer); Marshal.Release(unknown);
+                        if (hr != 0) continue;
+                        var volume = (ISimpleAudioVolume)Marshal.GetObjectForIUnknown(simplePointer); Marshal.Release(simplePointer);
+                        try {
+                            var context = Guid.Empty;
+                            if (set is int level) {
+                                Marshal.ThrowExceptionForHR(volume.SetMasterVolume(level / 100f, ref context));
+                                if (level > 0) volume.SetMute(false, ref context);
+                            }
+                            volume.GetMasterVolume(out var applied); volume.GetMute(out var muted);
+                            var current = new AppVolume((int)Math.Round(applied * 100), muted);
+                            if (result == null || current.Level > result.Level) result = current;
+                        } finally { Marshal.ReleaseComObject(volume); }
+                    } finally { Marshal.ReleaseComObject(control); }
+                }
+                return result;
+            } finally { Marshal.ReleaseComObject(sessions); }
+        } finally { Marshal.ReleaseComObject(manager); }
+    }
+    [ComImport, Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionManager2 {
+        [PreserveSig] int GetAudioSessionControl(nint group, uint flags, out nint control);
+        [PreserveSig] int GetSimpleAudioVolume(nint group, uint flags, out nint volume);
+        [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator sessions);
+    }
+    [ComImport, Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionEnumerator { [PreserveSig] int GetCount(out int count); [PreserveSig] int GetSession(int index, out IAudioSessionControl session); }
+    [ComImport, Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionControl {
+        [PreserveSig] int GetState(out int state);
+        [PreserveSig] int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+        [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string name, ref Guid context);
+        [PreserveSig] int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string path);
+        [PreserveSig] int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string path, ref Guid context);
+        [PreserveSig] int GetGroupingParam(out Guid group);
+        [PreserveSig] int SetGroupingParam(ref Guid group, ref Guid context);
+        [PreserveSig] int RegisterAudioSessionNotification(nint notify);
+        [PreserveSig] int UnregisterAudioSessionNotification(nint notify);
+    }
+    [ComImport, Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionControl2 {
+        [PreserveSig] int GetState(out int state);
+        [PreserveSig] int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+        [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string name, ref Guid context);
+        [PreserveSig] int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string path);
+        [PreserveSig] int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string path, ref Guid context);
+        [PreserveSig] int GetGroupingParam(out Guid group);
+        [PreserveSig] int SetGroupingParam(ref Guid group, ref Guid context);
+        [PreserveSig] int RegisterAudioSessionNotification(nint notify);
+        [PreserveSig] int UnregisterAudioSessionNotification(nint notify);
+        [PreserveSig] int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string id);
+        [PreserveSig] int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string id);
+        [PreserveSig] int GetProcessId(out uint pid);
+    }
+    [ComImport, Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ISimpleAudioVolume {
+        [PreserveSig] int SetMasterVolume(float level, ref Guid context);
+        [PreserveSig] int GetMasterVolume(out float level);
+        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid context);
+        [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+    }
     static T WithEndpointVolume<T>(Func<IAudioEndpointVolume, string, T> action)
     {
         var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();

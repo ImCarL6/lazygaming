@@ -22,20 +22,22 @@ public static class GameDisplaySettings
     static readonly string[] Keys = ["DeviceInstanceName", "DisplayName", "NormalWindowResolution", "WindowMode", "FullScreenMode"];
     const string WildsConfig = @"C:\Program Files (x86)\Steam\steamapps\common\MonsterHunterWilds\config.ini";
     // Somente parâmetros de apresentação do Wilds; preserva as opções gráficas/saves.
-    public static void Prepare(Game game, string directory)
+    public static LaunchDisplay.Target Prepare(Game game, string directory)
     {
-        WindowedOptionsProfile.Prepare(game, directory, Displays.TvBounds);
-        if (game.Id != "wilds") return;
+        var target = LaunchDisplay.Current();
+        WindowedOptionsProfile.Prepare(game, directory, () => target.Bounds);
+        BalatroDisplayProfile.Prepare(game, directory, () => target);
+        if (game.Id != "wilds") return target;
         var display = Displays.GameDisplay();
-        var source = Displays.StreamSource(true);
         PrepareReframework(game, directory);
         var path = Path.Combine(Path.GetDirectoryName(game.ProcessPath)!, "config.ini");
-        if (!File.Exists(path)) return;
+        if (!File.Exists(path)) return target;
         var original = File.ReadAllText(path);
         var backup = Path.Combine(directory, "wilds-display-before.ini");
         if (!File.Exists(backup)) File.WriteAllText(backup, original, new UTF8Encoding(false));
-        var updated = ConfigureWilds(original, display, source.Width, source.Height, Displays.Tv().Name);
+        var updated = ConfigureWilds(original, display, (uint)target.Bounds.Width, (uint)target.Bounds.Height, Displays.Tv().Name);
         File.WriteAllText(path, updated, new UTF8Encoding(false));
+        return target;
     }
     public static string ConfigureWilds(string original, string display, uint width, uint height, string displayName = "SAMSUNG")
     {
@@ -75,6 +77,7 @@ public static class GameDisplaySettings
     public static void Restore(string directory)
     {
         WindowedOptionsProfile.Restore(directory);
+        BalatroDisplayProfile.Restore(directory);
         var backup = Path.Combine(directory, "wilds-display-before.ini");
         if (!File.Exists(backup) || !File.Exists(WildsConfig)) return;
         var previous = new Dictionary<(string, string), string>();

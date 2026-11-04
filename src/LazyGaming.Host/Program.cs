@@ -182,13 +182,42 @@ if (args.Contains("--verify-displays") || args.Contains("--verify-extended-displ
 if (args.Contains("--inspect-audio")) { Console.WriteLine(JsonSerializer.Serialize(Audio.List())); return; }
 if (args.Contains("--inspect-volume")) { Console.WriteLine(JsonSerializer.Serialize(Audio.Volume())); return; }
 if (args.Contains("--verify-audio")) { Console.WriteLine(Audio.VerifyRoundTrip()); return; }
-var builder = WebApplication.CreateBuilder(args);
-builder.Logging.ClearProviders(); // Não registrar códigos, chaves, corpos ou URLs autenticadas.
+// Diagnóstico somente leitura da instalação na TV: descobre, confere condições e versão instalada; nunca instala.
+if (args.Contains("--tv-check")) {
+    HostConsole.AttachToParentTerminal();
+    var local = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
+        .SelectMany(n => n.GetIPProperties().UnicastAddresses).Select(a => a.Address).Where(PrivateNetwork.IsLocal).Distinct().ToArray();
+    var toolsArg = Array.IndexOf(args, "--tizen") is var ti and >= 0 && ti + 1 < args.Length ? args[ti + 1] : null;
+    if (args.Contains("--search-tools")) { toolsArg ??= TvInstaller.Search(TvInstaller.SearchStarts(), 9, TimeSpan.FromSeconds(25)); Console.WriteLine("tools: " + (toolsArg ?? "(não encontradas)")); }
+    if (Array.IndexOf(args, "--verify-installer") is var vi and >= 0 && vi + 1 < args.Length) { Console.WriteLine("assinatura Samsung válida: " + Authenticode.SignedBySamsung(args[vi + 1])); return; }
+    using var http = new HttpClient(new HttpClientHandler { UseProxy = false });
+    var checker = new TvInstaller(Path.Combine(AppContext.BaseDirectory, "wwwroot"), Path.GetTempPath(), () => TvInstaller.Locate(TvInstaller.DefaultRoots(toolsArg)),
+        new ProcessToolRunner(), () => local.Select(a => a.ToString()).ToArray(), (ip, c) => TvInstaller.Probe(http, ip, c), () => TvInstaller.Subnets(local));
+    if (Array.IndexOf(args, "--package-to") is var pi and >= 0 && pi + 1 < args.Length) {
+        // Só empacota/assina localmente, pelo mesmo caminho da instalação automática.
+        var tools = TvInstaller.Locate(TvInstaller.DefaultRoots(toolsArg)) ?? throw new InvalidOperationException("Ferramentas Tizen não encontradas.");
+        var target = Path.GetFullPath(args[pi + 1]);
+        Console.WriteLine(JsonSerializer.Serialize(await checker.Package(tools, Path.Combine(target, "stage"), target, default)));
+        return;
+    }
+    Console.WriteLine(JsonSerializer.Serialize(await checker.Check(false, false, null, default), new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+    return;
+}
+// Reinício do auxiliar pedido pelo próprio app: aguardar a instância anterior liberar porta e perfil.
+if (Array.IndexOf(args, "--wait-pid") is var waitAt and >= 0 && waitAt + 1 < args.Length && int.TryParse(args[waitAt + 1], out var waitPid)) {
+    try { using var previous = System.Diagnostics.Process.GetProcessById(waitPid); if (previous.ProcessName.Equals("LazyGaming.Host", StringComparison.OrdinalIgnoreCase)) previous.WaitForExit(20000); }
+    catch (ArgumentException) { }
+}
 var preview = args.Contains("--preview-library");
 var test = args.Contains("--test") || preview;
 int port = int.TryParse(Environment.GetEnvironmentVariable("LAZYGAMING_PORT"), out var requested) ? requested : 47831;
 var data = test ? Path.Combine(Path.GetTempPath(), "lazygaming-test-" + port) : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming");
 using var instanceLease = HostInstanceLease.Acquire(data);
+using var diagnostics = new RuntimeDiagnostics(data);
+diagnostics.Attach();
+try {
+var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders(); // Não registrar códigos, chaves, corpos ou URLs autenticadas.
 var pcPreferences = new PcPreferenceStore(data);
 var lan = (args.Contains("--lan") || pcPreferences.Current.TvIntegrationEnabled) && !test;
 var addresses = NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up)
@@ -231,10 +260,25 @@ var steamGuard = new SteamGuideGuard(() => library.SteamPath);
 var touchpad = new TouchpadMouse(() => !test && (environment.Active || desktop.AcceptsControllerInput), value => feedback?.Notify(value), () => { _ = Task.Run(async () => { try { await OpenConfiguredLauncher(); } catch (InvalidOperationException e) { feedback?.NotifyMessage(e.Message); } catch { feedback?.NotifyMessage("Não foi possível abrir o painel. Tente novamente."); } }); }, () => desktop.AcceptsControllerInput, controllerKeys.Push, preferences: () => pcPreferences.Current, diagnostic: ControllerDiagnostic);
 desktop.ControllerReleased = () => test || touchpad.Released;
 desktop.ResetInput = () => { controllerKeys.Clear(); touchpad.ResetNavigation(); };
-desktop.FocusIssue = message => feedback?.NotifyMessage(message);
+desktop.FocusIssue = message => { RuntimeDiagnostics.Report("launcher", "focus-failed", detail: new { message }); feedback?.NotifyMessage(message); };
 var app = builder.Build();
 object? tvReport = null, controllerAck = null;
 var hosts = addresses.Select(a => a.Address.ToString()).Append("localhost").Append("127.0.0.1").ToHashSet();
+app.Use(async (ctx, next) => {
+    var path = ctx.Request.Path.Value ?? "";
+    var operation = ctx.Request.Method == "POST" && System.Text.RegularExpressions.Regex.IsMatch(path,
+        @"^/api/(games/[^/]+/(start|stop|move-to-tv)|audio|displays|library/refresh|hub/(scan|setup|settings|tv-install|restart))$")
+        ? diagnostics.Begin(ctx.Request.Method + " " + path) : null;
+    bool completed = false, expectedCancellation = false;
+    try { await next(); completed = ctx.Response.StatusCode < 400; }
+    catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested || app.Lifetime.ApplicationStopping.IsCancellationRequested) { expectedCancellation = true; throw; }
+    catch (Exception e) { RuntimeDiagnostics.Report("http", "unhandled-request", e, new { method = ctx.Request.Method, route = path }); throw; }
+    finally {
+        if (!completed && !expectedCancellation && operation == null && path.StartsWith("/api/", StringComparison.Ordinal) && path != "/api/diagnostics/report")
+            RuntimeDiagnostics.Report("http", "request-failed", detail: new { method = ctx.Request.Method, route = path, status = ctx.Response.StatusCode });
+        diagnostics.End(operation, completed, expectedCancellation ? 499 : ctx.Response.StatusCode);
+    }
+});
 app.Use(async (ctx, next) =>
 {
     if (!hosts.Contains(ctx.Request.Host.Host)) { ctx.Response.StatusCode = 403; return; }
@@ -258,7 +302,7 @@ app.Use(async (ctx, next) =>
         bool desktopAuth = IPAddress.IsLoopback(remote) && desktop.Authenticate(ctx.Request.Cookies["lg-desktop"] ?? "") &&
             (ctx.Request.Method == "GET" || ctx.Request.Headers.Origin == $"http://127.0.0.1:{port}");
         bool hubAuth = IPAddress.IsLoopback(remote) && hubSession.Authenticate(ctx.Request.Cookies["lg-hub"] ?? "") &&
-            (ctx.Request.Path.StartsWithSegments("/api/hub") || ctx.Request.Path.StartsWithSegments("/api/games") && ctx.Request.Path.Value!.EndsWith("/settings") || ctx.Request.Path == "/api/status" || ctx.Request.Path == "/api/audio" || ctx.Request.Path == "/api/displays") &&
+            (ctx.Request.Path.StartsWithSegments("/api/hub") || ctx.Request.Path.StartsWithSegments("/api/games") && ctx.Request.Path.Value!.EndsWith("/settings") || ctx.Request.Path == "/api/status" || ctx.Request.Path == "/api/audio" || ctx.Request.Path == "/api/displays" || ctx.Request.Path == "/api/diagnostics/report") &&
             (ctx.Request.Method == "GET" || ctx.Request.Headers.Origin == $"http://127.0.0.1:{port}");
         if (ctx.Request.Path.StartsWithSegments("/api/hub") && !IPAddress.IsLoopback(remote)) { ctx.Response.StatusCode = 403; return; }
         bool localCommandAuth = IPAddress.IsLoopback(remote) && localCommands.Verify(ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, body,
@@ -270,6 +314,7 @@ app.Use(async (ctx, next) =>
     try { await next(); }
     catch (Exception e) when (e is InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException || ctx.Request.Path.StartsWithSegments("/api/hub") && e is InvalidDataException or IOException or UnauthorizedAccessException or JsonException)
     {
+        RuntimeDiagnostics.Report("operation", "request-exception", e, new { method = ctx.Request.Method, route = ctx.Request.Path.Value });
         if (ctx.Request.Path.StartsWithSegments("/api/games") || ctx.Request.Path == "/api/status") {
             try { File.WriteAllText(Path.Combine(data, "last-game-operation-error.json"), JsonSerializer.Serialize(new {
                 at = DateTime.UtcNow, method = ctx.Request.Method, path = ctx.Request.Path.Value,
@@ -281,6 +326,21 @@ app.Use(async (ctx, next) =>
 });
 app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(Path.Combine(AppContext.BaseDirectory, "wwwroot")) });
 app.UseStaticFiles(new StaticFileOptions { FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(Path.Combine(AppContext.BaseDirectory, "wwwroot")) });
+app.MapPost("/api/diagnostics/report", (HttpContext ctx) => {
+    using var parsed = JsonDocument.Parse((string)ctx.Items["body"]!);
+    var report = parsed.RootElement;
+    string Text(string name) => report.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
+    diagnostics.Record("frontend", Text("code"), true, detail: new { source = Text("source"), message = Text("message"), stack = Text("stack"), file = Text("file"), line = Text("line"), viewport = Text("viewport"), browser = Text("browser") });
+    return Results.Ok(new { saved = diagnostics.Available });
+});
+app.MapPost("/api/hub/diagnostics/open", () => {
+    if (!diagnostics.Available) throw new InvalidOperationException("Não foi possível gravar os relatórios neste PC. Confira o espaço livre e as permissões do seu usuário.");
+    var report = diagnostics.Export();
+    if (!test) {
+        var open = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = false }; open.ArgumentList.Add(diagnostics.Root); System.Diagnostics.Process.Start(open);
+    }
+    return Results.Ok(new { ready = true, reportCreated = report != null, issues = diagnostics.IssueCount });
+});
 app.MapMethods("/desktop-session", ["GET", "POST"], async (HttpContext ctx) =>
 {
     if (!IPAddress.IsLoopback(ctx.Connection.RemoteIpAddress!) || ctx.Request.Host.Host != "127.0.0.1") return Results.StatusCode(403);
@@ -326,7 +386,7 @@ app.MapPost("/api/launcher/hide", async (HttpContext ctx) => {
 });
 app.MapGet("/api/discover", (string? challenge) => new { identity = security.Identity, name = Environment.MachineName,
     proof = security.Proof((challenge ?? "")[..Math.Min(challenge?.Length ?? 0, 100)]), test });
-app.MapPost("/api/pair", (PairRequest req) => security.Pair(req.Code));
+app.MapPost("/api/pair", (PairRequest req) => req.Invite is { Length: > 0 } invite ? security.PairInvite(invite) : security.Pair(req.Code ?? ""));
 app.MapPost("/api/recovery/enroll", (HttpContext ctx) => {
     if (!test && (ctx.Connection.RemoteIpAddress == null || IPAddress.IsLoopback(ctx.Connection.RemoteIpAddress))) return Results.StatusCode(403) as IResult;
     using var body = JsonDocument.Parse((string)ctx.Items["body"]!);
@@ -418,7 +478,7 @@ app.MapPost("/api/tv", (HttpContext ctx) =>
     return Results.Ok(new { accepted = true });
 });
 app.MapGet("/api/tv", () => Results.Ok(tvReport));
-async Task EnrichLibrary(bool retryMissing = false) { await library.Metadata.EnsureAll(library.Games, retryMissing); await artwork.EnsureAll(); }
+async Task EnrichLibrary(bool retryMissing = false) { try { await library.Metadata.EnsureAll(library.Games, retryMissing); await artwork.EnsureAll(); } catch (Exception e) { RuntimeDiagnostics.Report("library", "enrichment-failed", e); } }
 var pcHub = new PcHub(library, games, () => EnrichLibrary(true), () => pcPreferences.Current.Enabled);
 pcHub.Map(app, artwork, hubSession, port);
 async Task QuitHelper() {
@@ -487,7 +547,8 @@ app.MapPost("/api/hub/pc-settings", async (HttpContext ctx) => {
         if (!test && value.AudioDeviceId is { Length: > 0 } and not "keep" && !Audio.List().Any(d => d.Id == value.AudioDeviceId))
             throw new InvalidOperationException("A saída de áudio está desconectada.");
         pcPreferences.Save(value with { Enabled = pcPreferences.Current.Enabled, SetupCompleted = pcPreferences.Current.SetupCompleted,
-            SamsungHintDismissed = pcPreferences.Current.SamsungHintDismissed });
+            SamsungHintDismissed = pcPreferences.Current.SamsungHintDismissed, TvAutoInstall = pcPreferences.Current.TvAutoInstall,
+            TizenToolsPath = pcPreferences.Current.TizenToolsPath, TvAddress = pcPreferences.Current.TvAddress, TvSetupResume = pcPreferences.Current.TvSetupResume });
     });
     return Results.Ok(pcPreferences.Current);
 });
@@ -503,6 +564,7 @@ object SetupSnapshot() {
         displayPath = preferences.DisplayPath ?? Displays.SelectTarget(screens)?.DevicePath,
         onlyGameDisplay = !environment.DisplayControls.MonitorsEnabled,
         samsungHint = PcSetup.SuggestSamsung(screens,preferences,security.Paired),
+        tvSetupResume = preferences.TvSetupResume,
         samsungOffer = PcSetup.SamsungOffer(screens,preferences,security.Paired,lan,test ? [] : lanAddresses.Select(a => a.Address.ToString()).ToArray()) };
 }
 app.MapGet("/api/hub/setup", () => Results.Ok(SetupSnapshot()));
@@ -544,6 +606,141 @@ app.MapPost("/api/hub/samsung-hint/dismiss", () => {
     pcPreferences.Save(pcPreferences.Current with { SamsungHintDismissed = true });
     return Results.Ok(new { accepted = true });
 });
+// Instalação automática do app da TV: só depois da adesão do usuário (Configurar agora).
+var tvHttp = new HttpClient(new HttpClientHandler { UseProxy = false });
+var tvInstaller = new TvInstaller(Path.Combine(AppContext.BaseDirectory, "wwwroot"), Path.GetTempPath(),
+    () => TvInstaller.Locate(TvInstaller.DefaultRoots(pcPreferences.Current.TizenToolsPath)), new ProcessToolRunner(),
+    () => lanAddresses.Select(a => a.Address.ToString()).ToArray(), (ip, cancel) => TvInstaller.Probe(tvHttp, ip, cancel),
+    () => TvInstaller.Subnets(lanAddresses.Select(a => a.Address)),
+    () => JsonSerializer.Serialize(new { identity = security.Identity, addresses = lanAddresses.Select(a => $"http://{a.Address}:{port}"), invite = security.IssueInvite(TimeSpan.FromHours(24)) }));
+TvInstaller.Status PreviewTv() => new("installed", [new("tv", "ok", "TV de teste (prévia)"), new("developer", "ok", "Modo desenvolvedor com o endereço deste PC"),
+    new("tools", "ok", "Ferramentas Tizen e perfil de teste"), new("access", "ok", "Acesso de desenvolvimento confirmado"), new("app", "ok", "LazyGaming " + tvInstaller.BundledVersion + " instalado na TV")],
+    new("127.0.0.1", "Prévia", "TV de teste", true, "127.0.0.1", "preview"), tvInstaller.BundledVersion, null, null, false, DateTimeOffset.UtcNow);
+var tizenDownload = new TizenStudioDownload(tvHttp, Path.Combine(Path.GetTempPath(), "LazyGaming-Tizen"));
+// Certificado Samsung pelo app: login na página oficial, chaves geradas aqui, perfil registrado pela Tizen CLI.
+var certificates = new SamsungCertificates(tvHttp, SamsungCertificates.DefaultFolder());
+object certificateState = new { phase = "idle" }; int certificateRunning = 0;
+void StartSamsungCertificate() {
+    if (Interlocked.Exchange(ref certificateRunning, 1) == 1) return;
+    _ = Task.Run(async () => {
+        var cancel = app.Lifetime.ApplicationStopping;
+        try {
+            var tools = TvInstaller.Locate(TvInstaller.DefaultRoots(pcPreferences.Current.TizenToolsPath)) ?? throw new InvalidOperationException("Instale as ferramentas Tizen primeiro.");
+            var tv = tvInstaller.Current.Tv ?? throw new InvalidOperationException("A TV ainda não foi encontrada. Use Tentar agora.");
+            var runner = new ProcessToolRunner(); var serial = tv.Ip + ":" + TvInstaller.SdbPort;
+            await runner.Run(tools.Sdb, ["connect", serial], TimeSpan.FromSeconds(20), null, cancel);
+            var duid = (await runner.Run(tools.Sdb, ["-s", serial, "shell", "0", "getduid"], TimeSpan.FromSeconds(15), null, cancel)).Output.Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(duid, "^[A-Za-z0-9._-]{6,64}$")) throw new InvalidOperationException("Não foi possível ler o DUID da TV. Confira o Developer Mode e tente de novo.");
+            certificateState = new { phase = "login" };
+            var login = await SamsungCertificates.WaitLogin(url => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }), cancel);
+            certificateState = new { phase = "creating" };
+            var (authorPassword, distributorPassword) = await certificates.Create(login, duid, cancel);
+            certificateState = new { phase = "registering" };
+            var env = tools.JavaHome != null ? new Dictionary<string, string> { ["JAVA_HOME"] = tools.JavaHome } : null;
+            if (tools.ProfilesFile != null && File.ReadAllText(tools.ProfilesFile).Contains("name=\"" + SamsungCertificates.Profile + "\""))
+                await runner.Run(tools.Cli, ["security-profiles", "remove", "-n", SamsungCertificates.Profile], TimeSpan.FromMinutes(1), env, cancel);
+            List<string> add = ["security-profiles", "add", "-n", SamsungCertificates.Profile, "-a", certificates.AuthorFile, "-p", authorPassword, "-d", certificates.DistributorFile, "-dp", distributorPassword];
+            if (tools.Profile == null) add.Add("-A");
+            var added = await runner.Run(tools.Cli, add, TimeSpan.FromMinutes(1), env, cancel);
+            if (TvInstaller.Locate([tools.Root])?.Profile != SamsungCertificates.Profile)
+                throw new InvalidOperationException("Os certificados foram criados em " + certificates.Folder + ", mas a Tizen CLI não registrou o perfil. " + System.Text.RegularExpressions.Regex.Replace(added.Output, "(-p|-dp)\\s+\\S+", "$1 ***").Trim().Split('\n').LastOrDefault());
+            certificateState = new { phase = "done", folder = certificates.Folder };
+            _ = CheckTv(true);
+        }
+        catch (OperationCanceledException) { certificateState = new { phase = "idle" }; }
+        catch (Exception e) { certificateState = new { phase = "failed", error = e.Message }; }
+        finally { Interlocked.Exchange(ref certificateRunning, 0); }
+    });
+}
+// Procura uma instalação existente do Tizen Studio no PC (uma vez a cada 10 min, com prazo) e lembra a pasta encontrada.
+long toolsSearchedAt = -600_000; var toolsSearch = new SemaphoreSlim(1, 1);
+async Task FindTizenTools() {
+    if (TvInstaller.Locate(TvInstaller.DefaultRoots(pcPreferences.Current.TizenToolsPath)) is { } known) {
+        if (pcPreferences.Current.TizenToolsPath == null) pcPreferences.Save(pcPreferences.Current with { TizenToolsPath = known.Root });
+        return;
+    }
+    if (Environment.TickCount64 - toolsSearchedAt < (tizenDownload.Current.Phase == "opened" ? 60_000 : 600_000) || !await toolsSearch.WaitAsync(0)) return;
+    try {
+        toolsSearchedAt = Environment.TickCount64;
+        var found = await Task.Run(() => TvInstaller.Search(TvInstaller.SearchStarts(), 9, TimeSpan.FromSeconds(25)));
+        if (found != null) pcPreferences.Save(pcPreferences.Current with { TizenToolsPath = found });
+    } finally { toolsSearch.Release(); }
+}
+async Task<TvInstaller.Status> CheckTv(bool force) {
+    if (test) return PreviewTv();
+    await FindTizenTools();
+    var status = await tvInstaller.Check(pcPreferences.Current.TvAutoInstall && lan, force, pcPreferences.Current.TvAddress, app.Lifetime.ApplicationStopping);
+    RuntimeDiagnostics.State("tv-install", status.Phase is "installed" or "idle" or "ready" ? null : status.Phase + ": " + status.Message);
+    if (status.Tv?.Ip is { } ip && ip != pcPreferences.Current.TvAddress) pcPreferences.Save(pcPreferences.Current with { TvAddress = ip });
+    return status;
+}
+object TvInstallSnapshot() => new { auto = pcPreferences.Current.TvAutoInstall, lanEnabled = lan || test, restartRequired = pcPreferences.Current.TvIntegrationEnabled && !lan && !test,
+    paired = security.Paired, bundledVersion = tvInstaller.BundledVersion, toolsPath = pcPreferences.Current.TizenToolsPath,
+    status = test && pcPreferences.Current.TvAutoInstall ? PreviewTv() : tvInstaller.Current,
+    download = tizenDownload.Current, searchingTools = toolsSearch.CurrentCount == 0, certificate = certificateState,
+    installPath = TizenStudioDownload.InstallPath(), installerReady = File.Exists(tizenDownload.File),
+    addresses = lanAddresses.Select(a => a.Address.ToString()) };
+app.MapGet("/api/hub/tv-install", () => Results.Ok(TvInstallSnapshot()));
+app.MapPost("/api/hub/tv-install", async (HttpContext ctx) => {
+    using var body = JsonDocument.Parse((string)ctx.Items["body"]!);
+    var action = body.RootElement.TryGetProperty("action", out var a) && a.ValueKind == JsonValueKind.String ? a.GetString() : null;
+    switch (action) {
+        case "enable": pcPreferences.Save(pcPreferences.Current with { TvAutoInstall = true, TvIntegrationEnabled = true, SamsungHintDismissed = true }); break;
+        case "disable": pcPreferences.Save(pcPreferences.Current with { TvAutoInstall = false }); break;
+        case "tools": {
+            var path = body.RootElement.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+            if (path != null && (!Path.IsPathFullyQualified(path) || TvInstaller.Locate([path]) == null)) return Results.BadRequest(new { error = "Essa pasta não tem o Tizen Studio (sdb e tizen)." });
+            pcPreferences.Save(pcPreferences.Current with { TizenToolsPath = path }); break;
+        }
+        case "check": break;
+        case "download-tools": {
+            if (test) return Results.Conflict(new { error = "A prévia não baixa ferramentas." });
+            // O usuário aceitou a licença na tela ao clicar em instalar; o Windows pede a confirmação de administrador.
+            var target = TizenStudioDownload.InstallPath();
+            tizenDownload.StartInstall(Authenticode.SignedBySamsung, async file => {
+                using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(file, "--accept-license --no-java-check \"" + target + "\"") { UseShellExecute = true, Verb = "runas" })!;
+                await process.WaitForExitAsync(app.Lifetime.ApplicationStopping); return process.ExitCode;
+            }, () => {
+                if (TvInstaller.Locate([target]) == null) return false;
+                pcPreferences.Save(pcPreferences.Current with { TizenToolsPath = target }); _ = CheckTv(true); return true;
+            }, app.Lifetime.ApplicationStopping);
+            return Results.Ok(TvInstallSnapshot());
+        }
+        case "open-installer":
+            if (test || !File.Exists(tizenDownload.File) || !Authenticode.SignedBySamsung(tizenDownload.File)) return Results.BadRequest(new { error = "Baixe o instalador primeiro." });
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(tizenDownload.File) { UseShellExecute = true });
+            return Results.Ok(TvInstallSnapshot());
+        case "samsung-certificate":
+            if (test) return Results.Conflict(new { error = "A prévia não cria certificados." });
+            StartSamsungCertificate();
+            return Results.Ok(TvInstallSnapshot());
+        case "open-tool": {
+            // Só ferramentas oficiais localizadas pelo próprio Host (caminho fixo), nunca um caminho vindo da página.
+            var which = body.RootElement.TryGetProperty("tool", out var w) && w.ValueKind == JsonValueKind.String ? w.GetString() : null;
+            var tools = TvInstaller.Locate(TvInstaller.DefaultRoots(pcPreferences.Current.TizenToolsPath));
+            var exe = which == "certificate-manager" ? tools?.CertificateManager : which == "package-manager" ? tools?.PackageManager : null;
+            if (test) return Results.Conflict(new { error = "A prévia não abre ferramentas." });
+            if (exe == null) return Results.BadRequest(new { error = "Ferramenta não encontrada nesta instalação do Tizen Studio." });
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe)! });
+            return Results.Ok(TvInstallSnapshot());
+        }
+        default: return Results.BadRequest(new { error = "Ação desconhecida." });
+    }
+    if (action is "enable" or "check" or "tools") { var tvCheck = CheckTv(true); await Task.WhenAny(tvCheck, Task.Delay(400)); }
+    return Results.Ok(TvInstallSnapshot());
+});
+// Reinicia somente o auxiliar (abre a rede local para a TV). Nunca durante sessão; Windows e TV não são tocados.
+app.MapPost("/api/hub/restart", async () => {
+    if (test) return Results.Conflict(new { error = "A prévia não reinicia o auxiliar." });
+    await games.Rescan(() => { if (environment.Active) throw new InvalidOperationException("Encerre a sessão antes de reiniciar o LazyGaming."); });
+    pcPreferences.Save(pcPreferences.Current with { TvSetupResume = true });
+    app.Lifetime.ApplicationStopped.Register(() => {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!, ["--wait-pid", Environment.ProcessId.ToString(), "--launcher"]) { UseShellExecute = false }); } catch { }
+    });
+    _ = Task.Run(async () => { await Task.Delay(300); app.Lifetime.StopApplication(); });
+    return Results.Ok(new { accepted = true });
+});
+app.MapPost("/api/hub/tv-setup/opened", () => { if (pcPreferences.Current.TvSetupResume) pcPreferences.Save(pcPreferences.Current with { TvSetupResume = false }); return Results.Ok(new { accepted = true }); });
 // Retomar pelo painel avançado: só desfaz a dispensa; não ativa LAN nem consulta a TV.
 app.MapPost("/api/hub/samsung-hint/resume", () => {
     pcPreferences.Save(pcPreferences.Current with { SamsungHintDismissed = false });
@@ -627,18 +824,45 @@ app.MapPost("/api/audio", (HttpContext ctx) =>
     return Results.Ok(new { accepted = true });
 });
 var simulatedVolume = new VolumeState(50, false, "Saída simulada");
-app.MapGet("/api/volume", () => test ? simulatedVolume : Audio.Volume());
+var simulatedGameVolume = new Audio.AppVolume(80, false);
+// Jogo verificado em execução (inclui emuladores cadastrados, como o Eglantine): PIDs do jogo e pasta dele, porque alguns
+// jogos tocam áudio por um processo auxiliar da própria pasta. Runtimes compartilhados (dotnet/java) só pelo PID.
+(string Name, Func<int, bool> Match)? RunningGameAudio() {
+    var running = platform.Processes();
+    if (running.Count == 0) return null;
+    var game = library.Games.FirstOrDefault(g => running.Any(r => string.Equals(g.ProcessPath, r.Path, StringComparison.OrdinalIgnoreCase)));
+    var pids = running.Select(r => r.Pid).ToHashSet();
+    var folders = running.Where(r => r.Argument == null).Select(r => Path.GetDirectoryName(r.Path)).Where(f => f != null).Select(f => f!.TrimEnd('\\') + "\\").Distinct().ToArray();
+    return (game != null ? library.Metadata.DisplayName(game) : Path.GetFileNameWithoutExtension(running[0].Path),
+        pid => pids.Contains(pid) || ProcessImage.Observe(pid).Image is string image && folders.Any(f => image.StartsWith(f, StringComparison.OrdinalIgnoreCase)));
+}
+object VolumeSnapshot(VolumeState system) {
+    object? game = null;
+    if (test) game = new { name = "Jogo de teste", level = simulatedGameVolume.Level, muted = simulatedGameVolume.Muted };
+    else if (RunningGameAudio() is { } audio && Audio.SessionVolume(audio.Match) is { } v) game = new { name = audio.Name, level = v.Level, muted = v.Muted };
+    return new { level = system.Level, muted = system.Muted, device = system.Device, game };
+}
+app.MapGet("/api/volume", () => VolumeSnapshot(test ? simulatedVolume : Audio.Volume()));
 app.MapPost("/api/volume", (HttpContext ctx) =>
 {
     using var body = JsonDocument.Parse((string)ctx.Items["body"]!);
-    var current = test ? simulatedVolume : Audio.Volume();
+    var forGame = body.RootElement.TryGetProperty("target", out var target) && target.ValueKind == JsonValueKind.String && target.GetString() == "game";
+    var system = test ? simulatedVolume : Audio.Volume();
+    if (forGame) {
+        if (!body.RootElement.TryGetProperty("level", out var gameRequested) || !gameRequested.TryGetInt32(out var gameLevel)) return Results.BadRequest(new { error = "Informe o volume desejado." });
+        gameLevel = Math.Clamp(gameLevel, 0, 100);
+        if (test) { simulatedGameVolume = new(gameLevel, false); return Results.Ok(VolumeSnapshot(system)); }
+        var audio = RunningGameAudio() ?? throw new InvalidOperationException("Nenhum jogo aberto.");
+        if (Audio.SetSessionVolume(audio.Match, gameLevel) == null) throw new InvalidOperationException("O jogo ainda não está tocando som.");
+        return Results.Ok(VolumeSnapshot(system));
+    }
     int level;
     if (body.RootElement.TryGetProperty("level", out var requested) && requested.TryGetInt32(out var absolute)) level = absolute;
-    else if (body.RootElement.TryGetProperty("direction", out var direction) && direction.TryGetInt32(out var step) && step != 0) level = Audio.StepVolume(current.Level, step);
+    else if (body.RootElement.TryGetProperty("direction", out var direction) && direction.TryGetInt32(out var step) && step != 0) level = Audio.StepVolume(system.Level, step);
     else return Results.BadRequest(new { error = "Informe o volume desejado." });
     level = Math.Clamp(level, 0, 100);
-    if (test) return Results.Ok(simulatedVolume = simulatedVolume with { Level = level, Muted = level == 0 && simulatedVolume.Muted });
-    return Results.Ok(Audio.SetVolume(level));
+    if (test) return Results.Ok(VolumeSnapshot(simulatedVolume = simulatedVolume with { Level = level, Muted = level == 0 && simulatedVolume.Muted }));
+    return Results.Ok(VolumeSnapshot(Audio.SetVolume(level)));
 });
 Console.WriteLine($"LazyGaming: http://127.0.0.1:{port} ({(test ? "SIMULAÇÃO" : lan ? "rede local" : "somente PC")})");
 Console.WriteLine("Pareie pela página aberta no PC. Ctrl+C encerra o auxiliar; jogos permanecem abertos.");
@@ -655,6 +879,7 @@ if (!test) _ = Task.Run(async () => {
 });
 // Diagnóstico local do controle: só tipo/mensagem/primeiro quadro, sem relatórios, chaves ou caminhos de usuário.
 void ControllerDiagnostic(string kind, Exception? error) {
+    RuntimeDiagnostics.Report("controller", kind, error);
     try {
         var file = Path.Combine(data, "controller-diagnostics.jsonl");
         lock (controllerDiagnosticGate) {
@@ -670,9 +895,17 @@ _ = Task.Run(async () =>
 {
     while (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
     {
-        try { await games.Tick(pcPreferences.Current.Enabled); await background.Tick(); } catch { /* Estado desconhecido nunca encerra ou troca processos. */ }
-        try { if (!test) steamGuard.Tick(pcPreferences.Current.BlockSteamGuide, environment.Active || desktop.Visible); } catch { }
+        try { await games.Tick(pcPreferences.Current.Enabled); await background.Tick(); } catch (Exception e) { RuntimeDiagnostics.Report("game-loop", "tick-failed", e); }
+        try { if (!test) steamGuard.Tick(pcPreferences.Current.BlockSteamGuide, environment.Active || desktop.Visible); } catch (Exception e) { RuntimeDiagnostics.Report("steam", "guide-guard-failed", e); }
         await Task.Delay(750);
+    }
+});
+// Instala/atualiza o app da TV sozinho quando todas as condições ficam verdadeiras (adesão, TV, Developer Mode, ferramentas, acesso).
+if (!test) _ = Task.Run(async () => {
+    try { await Task.Delay(5000, app.Lifetime.ApplicationStopping); } catch (OperationCanceledException) { return; }
+    while (!app.Lifetime.ApplicationStopping.IsCancellationRequested) {
+        try { if (pcPreferences.Current.TvAutoInstall && !environment.Active) await CheckTv(false); } catch (OperationCanceledException) { break; } catch (Exception e) { RuntimeDiagnostics.Report("tv-install", "check-failed", e); }
+        try { await Task.Delay(tvInstaller.Current.Phase == "installed" ? 120_000 : 20_000, app.Lifetime.ApplicationStopping); } catch (OperationCanceledException) { break; }
     }
 });
 if (!test && args.Contains("--hub")) app.Lifetime.ApplicationStarted.Register(OpenHub);
@@ -680,8 +913,16 @@ else if (!test && !pcPreferences.Current.SetupCompleted) app.Lifetime.Applicatio
 else if (args.Contains("--launcher")) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(async () => { try { await OpenConfiguredLauncher(); } catch { feedback?.NotifyMessage("Não foi possível abrir o launcher. Abra a Central pelo ícone do LazyGaming."); } }); });
 app.Lifetime.ApplicationStopping.Register(desktop.Close);
 app.Lifetime.ApplicationStopped.Register(() => (platform as IDisposable)?.Dispose());
-await app.RunAsync();
-record PairRequest(string Code);
+app.Lifetime.ApplicationStarted.Register(() => {
+    _ = Task.Run(async () => {
+        diagnostics.CaptureSystem();
+        diagnostics.Context("library", new { games = library.Games.Count, steam = library.Games.Count(g => g.Steam), lanEnabled = lan, controllers = pcPreferences.Current.ControllerSource });
+        await diagnostics.ImportWindowsCrashes(library.Games.Where(g => g.ProcessArgument == null || EmulatorLibrary.IsEmulator(g.ProcessPath)).Select(g => Path.GetFileName(g.ProcessPath)));
+    });
+});
+await app.RunAsync(); diagnostics.Complete();
+} catch (Exception e) { RuntimeDiagnostics.Report("process", "host-failed", e); throw; }
+record PairRequest(string? Code, string? Invite = null);
 static class HostConsole {
     public static void AttachToParentTerminal() {
         if (Console.IsOutputRedirected) return;

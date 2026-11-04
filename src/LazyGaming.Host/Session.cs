@@ -147,11 +147,11 @@ public sealed class TvSession : IGameEnvironment
             {
                 var devices = platform.ListAudio();
                 var target = platform.SessionAudio(devices);
-                if (target == null) { audioId = null; note = "Escolha a saída de áudio na Central do PC ou aguarde o HDMI…"; return; }
+                if (target == null) { audioId = null; note = "Escolha a saída de áudio na Central do PC ou aguarde o HDMI…"; RuntimeDiagnostics.State("audio", note); return; }
                 if (!target.Current) platform.SelectAudio(target.Id);
-                audioId = target.Id; note = null;
+                audioId = target.Id; note = null; RuntimeDiagnostics.State("audio", null);
             }
-            catch { audioId = null; note = "Aguardando o áudio da TV. O auxiliar continuará tentando."; }
+            catch (Exception e) { RuntimeDiagnostics.Report("audio", "prepare-failed", e); audioId = null; note = "Aguardando o áudio da TV. O auxiliar continuará tentando."; }
         }
     }
     public void ReconfirmDesktop() {
@@ -198,7 +198,7 @@ public sealed class TvSession : IGameEnvironment
                 File.Delete(file);
                 monitorsEnabled = preferredMonitorsEnabled;
             }
-            catch { restoreFailed = true; note = "Não foi possível restaurar toda a configuração anterior. Reinicie o auxiliar após conferir os cabos."; }
+            catch (Exception e) { RuntimeDiagnostics.Report("session", "restore-failed", e); restoreFailed = true; note = "Não foi possível restaurar toda a configuração anterior. Reinicie o auxiliar após conferir os cabos."; }
         }
     }
     public sealed record Saved(Displays.Snapshot Displays, string[] Audio, bool MonitorsEnabled = false, bool ManualAudio = false, bool Stream = false);

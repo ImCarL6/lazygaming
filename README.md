@@ -1,5 +1,7 @@
 # LazyGaming
 
+**0.28.4 — versão de teste para amigos (Windows x64).** Instalação por usuário, configuração inicial pelo controle e relatórios automáticos de falhas/estabilidade. Os relatórios ficam em `%LOCALAPPDATA%\LazyGaming\diagnostics`, com ZIPs em `reports`; **Configurações avançadas → Relatórios de problemas** abre a pasta. A coleta é local; compartilhar o ZIP é uma ação do usuário. [Instalação, diagnóstico e limites dos testes](docs/PC-PARA-AMIGOS.md).
+
 Launcher para escolher, abrir, continuar e encerrar jogos do PC pela TV Samsung ou por uma janela executável no Windows. Biblioteca e interface compartilhadas; DualSense conectado ao PC. HDMI é o caminho principal, com streaming Moonlight integrado como alternativa.
 
 ## Estado — PC 0.21.1 / ZIP distribuível anterior 0.19.0 / TV 0.17.0

@@ -28,7 +28,7 @@ static class ProcessExitTests
         using var tracked = ProcessImage.Track(child.Id, executable);
         Check(!tracked.Exited, "handle nativo acompanha fixture viva com acesso limitado");
         await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(6));
-        Check(child.ExitCode == 259 && tracked.Exited, "sinal do objeto confirma saída mesmo quando exit code é STILL_ACTIVE");
+        Check(child.ExitCode == 259 && tracked.Exited && tracked.ExitCode == 259, "handle original confirma saída e código real mesmo quando o valor é STILL_ACTIVE");
         bool listed = true;
         for (int i = 0; i < 20 && listed; i++) {
             listed = false;

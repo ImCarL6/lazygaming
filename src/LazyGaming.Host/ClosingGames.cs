@@ -1,6 +1,6 @@
 namespace LazyGaming;
 
-public interface IProcessLifetime : IDisposable { bool Exited { get; } }
+public interface IProcessLifetime : IDisposable { bool Exited { get; } uint? ExitCode => null; }
 
 // Só recebe processos cuja imagem/runtime já foram verificados antes de fechar.
 // O handle identifica o objeto original mesmo se o número do PID for reutilizado.

@@ -136,7 +136,7 @@ function endCapture() {
 function pointerLabels() { $('mouseSpeedValue').textContent = $('mouseSpeed').value; $('mouseDeadzoneValue').textContent = $('mouseDeadzone').value + '%'; $('mouseCurveValue').textContent = $('mouseCurve').value; }
 for (const id of ['mouseSpeed','mouseDeadzone','mouseCurve']) $(id).oninput = pointerLabels;
 const titles = { library: ['Biblioteca', 'Confira os jogos e gerencie o que aparece no launcher.'], folders: ['Pastas e busca', 'Defina onde encontrar jogos e quando atualizar a biblioteca.'], add: ['Adicionar jogo', 'Traga uma instalação local para o seu launcher.'], system: ['Configurações', 'Ajuste as opções do LazyGaming neste PC.'] };
-function notice(text, error = false) { $('notice').textContent = text; $('notice').hidden = !text; $('notice').classList.toggle('error', error); if ($('gameDialog').open) $('dialogNotice').textContent = text; }
+function notice(text, error = false) { LGNotices.show($('notice'), text); $('notice').hidden = !text; $('notice').classList.toggle('error', error); LGNotices.show($('dialogNotice'), $('gameDialog').open ? text : ''); }
 async function api(path, body) {
   let response;
   try { response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }); }
@@ -180,7 +180,7 @@ async function refreshController() {
 async function run(action, message) {
   if (working) return; working = true; $('scan').disabled = true;
   try { await action(); if (message) notice(message); }
-  catch (error) { if(!offline)notice(error.message, true); }
+  catch (error) { if (typeof LGDiagnostics !== 'undefined') LGDiagnostics.report('hub-action-failed', error); if(!offline)notice(error.message, true); }
   finally { working = false; $('scan').disabled = offline; }
 }
 function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }

@@ -3,11 +3,10 @@
 var $ = function (id) { return document.getElementById(id); };
 var saved; try { saved = JSON.parse(localStorage.getItem('lazygaming') || 'null'); } catch (_) { saved = null; }
 var base = saved ? saved.base : location.protocol === 'http:' ? location.origin : '';
-var session = saved, busy = false, connected = false, needsPair = false, lastState = null, selectedAudio = '', previousFocus;
+var libraryOpened = false, session = saved, busy = false, connected = false, needsPair = false, lastState = null, selectedAudio = '', previousFocus;
 var recoveryLink; try { recoveryLink = JSON.parse(localStorage.getItem('lazygaming-recovery') || 'null'); } catch (_) { recoveryLink = null; }
 var recoveryEnrolled = false;
 var mouseEnabled = true;
-var previousEnvironmentNote = '';
 var setupParentOptions = false;
 var presentationMode = 'cable';
 var presentationCache = {}, presentationRequests = {}, presentationOrigin = '', presentationEpoch = 0;
@@ -63,7 +62,45 @@ function focusControl(element) {
   }
   if (element.dataset && element.dataset.id) selectGame(element.dataset.id, true);
 }
-function message(s) { $('message').textContent = s || ''; }
+function message(s) { LGNotices.show($('message'), s); }
+// Tela única de primeira conexão na TV (estilo do primeiro uso do PC); com o PC já conectado, o painel continua compacto.
+var autoSearched = false;
+function setupStatus(text) { if ($('setupStatus')) $('setupStatus').textContent = text || ''; }
+// Pareamento sem código: o PC que instalou o app deixou um convite de uso único (identidade + endereços + ficha).
+// Só envia a ficha a um PC que se identifica com a mesma identidade; falhou, cai na tela de código.
+async function autoPair() {
+  var boot = typeof window !== 'undefined' && window.LG_BOOTSTRAP;
+  if (!boot || !boot.invite || !boot.identity || !boot.addresses || !boot.addresses.length) return false;
+  $('setup').classList.add('auto'); setupStatus('Conectando ao LazyGaming do PC…');
+  try {
+    for (var i = 0; i < 6; i++) {
+      for (var j = 0; j < boot.addresses.length; j++) {
+        var address = boot.addresses[j];
+        try {
+          var info = await request(address + '/api/discover', {}, 2500);
+          if (info.identity !== boot.identity) continue;
+          var pair = await request(address + '/api/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invite: boot.invite }) });
+          base = address; $('address').value = address; session = pair; needsPair = false; persist();
+          setupStatus('Conectado. Sincronizando com o launcher do PC…');
+          await connect(); return true;
+        } catch (e) { if (e && /inválido|expirado/.test(e.message)) i = 99; }
+      }
+      if (i < 99) { setupStatus('Procurando o PC na rede…'); await new Promise(function (r) { setTimeout(r, 2500); }); }
+    }
+  } finally { $('setup').classList.remove('auto'); }
+  setupStatus('Não deu para conectar sozinho. No PC, use Mostrar código e digite abaixo.');
+  return false;
+}
+function syncSetupLook() {
+  var setup = $('setup'); if (!setup) return;
+  var first = !desktop && !connected && !setup.hidden;
+  setup.classList.toggle('first-connect', first);
+  if (first && !session && !autoSearched && !busy && !$('address').value && !setup.classList.contains('auto') && typeof LGPlatform !== 'undefined' && LGPlatform.tv.networkIp()) {
+    autoSearched = true; setTimeout(function () { if (!connected && !$('setup').hidden && !$('setup').classList.contains('auto')) $('find').click(); }, 300);
+  }
+}
+if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && $('setup')) new MutationObserver(syncSetupLook).observe($('setup'), { attributes: true, attributeFilter: ['hidden'] });
+if (typeof document !== 'undefined' && $('setup')) setTimeout(syncSetupLook, 0);
 function persist() { if (session) { session.base = base; localStorage.setItem('lazygaming', JSON.stringify(session)); } }
 function updateRecovery() { if ($('recoverConnection')) $('recoverConnection').hidden = local || desktop || !recoveryLink; }
 async function enrollRecovery() {
@@ -155,6 +192,7 @@ function button(text, action, className) {
 async function run(action) {
   if (busy) return; busy = true; message('');
   try { await action(); } catch (e) {
+    if (typeof LGDiagnostics !== 'undefined') LGDiagnostics.report('action-failed', e);
     if (e.retryable) { connected = false; $('connection').textContent = 'Reconectando ao PC…'; updateLiveBackground(); }
     message(e.message);
   }
@@ -494,17 +532,16 @@ async function refresh() {
   var result = await api('/api/status'); artworkMap = result.artwork || {}; renderGames(result.state.games);
   presentationMode = result.state.environment && result.state.environment.mode || 'cable';
   if (result.displays) renderDisplays(result.displays);
-  connected = true; needsPair = false;
+  if (!connected && !desktop && !libraryOpened) { libraryOpened = true; prepareLauncherSounds(); setTimeout(playLauncherOpen, 350); }
+  connected = true; needsPair = false; syncSetupLook();
+  if (typeof LGDiagnostics !== 'undefined') LGDiagnostics.flush();
   $('connection').textContent = result.preview ? 'Prévia no PC' : result.simulation ? 'Simulação de testes' : 'PC conectado';
   $('setup').hidden = true; $('library').hidden = false;
   updateLiveBackground();
-  if (result.state.startError) message(result.state.startError);
   var environmentNote = result.state.environment && result.state.environment.note || '';
-  if (environmentNote) message(environmentNote);
-  else if (previousEnvironmentNote && $('message').textContent === previousEnvironmentNote) message('');
-  previousEnvironmentNote = environmentNote;
+  LGNotices.changed('game-status', result.state.startError || environmentNote, $('message'));
   renderPadGlyphs(result.controller);
-  if ($('volumeButton') && !volumeChecked) { volumeChecked = true; loadVolume(false); }
+  if ($('volumeButton') && desktop && !volumeChecked) { volumeChecked = true; loadVolume(false); }
   if (result.controller) {
     mouseEnabled = result.controller.enabled;
     syncPointer();
@@ -656,9 +693,9 @@ $('find').onclick = function () { run(async function () {
     }
   }
   await Promise.all(Array.from({ length: 12 }, worker));
-  if (!found) throw Error('PC não encontrado. Confira o auxiliar, a rede e a permissão do Firewall.');
+  if (!found) { $('setup').classList.add('manual'); throw Error('PC não encontrado. Confira o LazyGaming no PC, a rede e o Firewall, ou informe o endereço.'); }
   base = found; $('address').value = base;
-  if (session) await connect(); else message('PC encontrado. Digite o código mostrado nele.');
+  if (session) await connect(); else { message('PC encontrado. Digite o código mostrado nele.'); focusControl($('code')); }
 }); };
 function handleRemoteKey(event) {
   var before = controllerFocus, editing = before && before.tagName === 'INPUT';
@@ -781,7 +818,10 @@ function playLauncherOpen() {
   try { if (context.state === 'suspended') context.resume().then(start).catch(function () {}); else start(); } catch (_) { }
 }
 if (typeof window !== 'undefined' && window.chrome && window.chrome.webview) window.chrome.webview.addEventListener('message', function (event) {
-  if (event.data && event.data.type === 'launcher-shown') requestAnimationFrame(playLauncherOpen);
+  if (event.data && /^(launcher-shown|launcher-hidden)$/.test(event.data.type)) {
+    LGNotices.clearAll();
+    if (event.data.type === 'launcher-shown') requestAnimationFrame(playLauncherOpen);
+  }
 });
 // Decodificar já no carregamento do launcher PC, antes da primeira abertura.
 if (typeof location !== 'undefined' && (desktop || /desktop=/.test(location.hash))) prepareLauncherSounds();
@@ -808,6 +848,8 @@ function playMenuSound(kind) {
 }
 // Volume rápido: botão superior do controle (ou clique no chip) abre; setas/analógico ajustam de 5 em 5.
 var VOLUME_KEY = 1001, volumeLevel = null, volumeMuted = false, volumeChecked = false, volumeSending = false, volumePending = false, volumeHideTimer, volumeTicket = 0;
+// Volume do jogo aberto (mixer do Windows): segunda linha do painel; ▲▼ escolhe PC ou jogo, ◀▶ ajusta.
+var gameVolume = null, volumeTarget = 'system', gameVolumeSending = false, gameVolumePending = false;
 function volumeOpen() { var hud = $('volumeHud'); return !!hud && !hud.hidden; }
 // Glifos no padrão dos botões do controle: face clara, símbolo escuro, pela posição física.
 var PAD_FACES = { dualsense: { south: 'cross', east: 'circle', north: 'triangle' }, xinput: { south: 'A', east: 'B', north: 'Y' }, 'switch-pro': { south: 'B', east: 'A', north: 'X' } };
@@ -842,8 +884,29 @@ function renderPadGlyphs(controller) {
   });
 }
 function deviceLabel(name) { return !name ? 'Volume' : name.indexOf('SAMSUNG') === 0 ? 'TV Samsung' : name.replace(/\s*\([^)]*\)\s*$/, ''); }
+function renderGameVolume() {
+  var box = $('volumeGame'); if (!box) return;
+  var dual = !!gameVolume; if (!dual) volumeTarget = 'system';
+  box.hidden = !dual; $('volumeHud').classList.toggle('dual', dual);
+  if ($('volumeSwitchHint')) $('volumeSwitchHint').hidden = !dual;
+  if ($('volumeSystem')) $('volumeSystem').classList.toggle('selected', volumeTarget === 'system');
+  box.classList.toggle('selected', volumeTarget === 'game');
+  if (!dual) return;
+  var level = gameVolume.muted ? 0 : gameVolume.level;
+  $('volumeGameName').textContent = gameVolume.name || 'Jogo';
+  $('volumeGameValue').textContent = gameVolume.muted ? 'Mudo' : String(gameVolume.level);
+  $('volumeGameFill').style.width = level + '%';
+  $('volumeGameTrack').setAttribute('aria-valuenow', String(level));
+  box.classList.toggle('muted', gameVolume.muted || gameVolume.level === 0);
+}
 function renderVolume(state) {
-  if (state) { volumeLevel = state.level; volumeMuted = !!state.muted; $('volumeDevice').textContent = deviceLabel(state.device); }
+  if (state) {
+    volumeLevel = state.level; volumeMuted = !!state.muted; $('volumeDevice').textContent = deviceLabel(state.device);
+    var hadGame = !!gameVolume;
+    if (!gameVolumeSending && !gameVolumePending) gameVolume = state.game || null; else if (!state.game) gameVolume = null;
+    // Jogo apareceu agora (ou painel recém-aberto): a linha do jogo já vem escolhida, que é o caso comum.
+    if (gameVolume && !hadGame) volumeTarget = 'game';
+  }
   if (volumeLevel === null) return;
   var silent = volumeMuted || volumeLevel === 0;
   $('volumeButton').hidden = false; $('volumeHint').hidden = false;
@@ -853,15 +916,16 @@ function renderVolume(state) {
   $('volumeTrack').setAttribute('aria-valuenow', String(volumeMuted ? 0 : volumeLevel));
   $('volumeButton').setAttribute('aria-label', 'Volume ' + (volumeMuted ? 'mudo' : volumeLevel + '%'));
   $('volumeButton').classList.toggle('muted', silent); $('volumeHud').classList.toggle('muted', silent);
+  renderGameVolume();
 }
 async function loadVolume(report) {
   try { renderVolume(await api('/api/volume')); }
   catch (e) { if (report) message('Volume indisponível: ' + e.message); else if (volumeLevel === null) { $('volumeButton').hidden = true; $('volumeHint').hidden = true; } }
 }
-function scheduleVolumeHide() { clearTimeout(volumeHideTimer); volumeHideTimer = setTimeout(closeVolume, 3500); }
+function scheduleVolumeHide() { clearTimeout(volumeHideTimer); volumeHideTimer = setTimeout(closeVolume, 2800); }
 function openVolume() {
   if (!connected) return;
-  $('volumeHud').hidden = false; renderVolume(); scheduleVolumeHide();
+  $('volumeHud').hidden = false; if (gameVolume) volumeTarget = 'game'; renderVolume(); scheduleVolumeHide();
   var ticket = ++volumeTicket;
   // Leitura fresca para refletir mudanças feitas pelo Windows ou pelo próprio jogo.
   if (!volumeSending) api('/api/volume').then(function (state) { if (ticket === volumeTicket && !volumeSending && !volumePending) renderVolume(state); })
@@ -869,10 +933,33 @@ function openVolume() {
 }
 function closeVolume() { clearTimeout(volumeHideTimer); $('volumeHud').hidden = true; }
 function pulseVolume(direction) {
-  var target = $(direction > 0 ? 'volumeUp' : 'volumeDown'); target.classList.add('pulse');
+  var game = volumeTarget === 'game' && gameVolume;
+  var target = $(game ? (direction > 0 ? 'volumeGameUp' : 'volumeGameDown') : direction > 0 ? 'volumeUp' : 'volumeDown'); if (!target) return; target.classList.add('pulse');
   setTimeout(function () { target.classList.remove('pulse'); }, 120);
 }
+function stepGameVolume(direction) {
+  var current = gameVolume.muted && direction > 0 ? 0 : gameVolume.level;
+  var next = Math.max(0, Math.min(100, direction > 0 ? Math.floor(current / 5) * 5 + 5 : Math.ceil(current / 5) * 5 - 5));
+  volumeTicket++; pulseVolume(direction); scheduleVolumeHide();
+  if (next === gameVolume.level && !(gameVolume.muted && direction > 0)) return;
+  gameVolume.level = next; if (next > 0) gameVolume.muted = false; renderGameVolume(); playMenuSound('move'); sendGameVolume();
+}
+async function sendGameVolume() {
+  if (gameVolumeSending) { gameVolumePending = true; return; }
+  gameVolumeSending = true;
+  try {
+    var applied;
+    do { gameVolumePending = false; applied = await api('/api/volume', { target: 'game', level: gameVolume.level }); } while (gameVolumePending);
+    gameVolumeSending = false; renderVolume(applied);
+  } catch (e) { message('Não foi possível ajustar o volume do jogo: ' + e.message); gameVolumeSending = false; loadVolume(false); }
+  finally { gameVolumeSending = false; }
+}
+function selectVolume(target) {
+  if (!gameVolume || target === volumeTarget) return;
+  volumeTarget = target; volumeTicket++; renderGameVolume(); scheduleVolumeHide(); playMenuSound('move');
+}
 function stepVolume(direction) {
+  if (volumeTarget === 'game' && gameVolume) { stepGameVolume(direction); return; }
   if (volumeLevel === null) return;
   var current = volumeMuted && direction > 0 ? 0 : volumeLevel;
   var next = Math.max(0, Math.min(100, direction > 0 ? Math.floor(current / 5) * 5 + 5 : Math.ceil(current / 5) * 5 - 5));
@@ -891,20 +978,29 @@ async function sendVolume() {
   finally { volumeSending = false; }
 }
 function handleVolumeKey(event) {
+  if (!desktop) return false;
   if (event.keyCode === VOLUME_KEY) {
     if (event.preventDefault) event.preventDefault();
     if (!event.repeat) { if (volumeOpen()) closeVolume(); else openVolume(); }
     return true;
   }
   if (!volumeOpen()) return false;
+  // Com jogo aberto: ▲▼ escolhe a linha (PC em cima, jogo embaixo) e ◀▶ ajusta. Sem jogo: qualquer seta ajusta, como antes.
+  if (gameVolume && (event.keyCode === 38 || event.keyCode === 40)) { event.preventDefault(); if (!event.repeat) selectVolume(event.keyCode === 38 ? 'system' : 'game'); return true; }
   if ([37, 38, 39, 40].indexOf(event.keyCode) !== -1) { event.preventDefault(); stepVolume(event.keyCode === 38 || event.keyCode === 39 ? 1 : -1); return true; }
   if (event.keyCode === 13 || event.keyCode === 10009 || event.key === 'Escape') { event.preventDefault(); if (!event.repeat) closeVolume(); return true; }
   return false;
 }
 if ($('volumeButton')) {
   $('volumeButton').onclick = function () { if (volumeOpen()) closeVolume(); else openVolume(); };
-  $('volumeUp').onclick = function () { stepVolume(1); };
-  $('volumeDown').onclick = function () { stepVolume(-1); };
+  $('volumeUp').onclick = function () { selectVolume('system'); stepVolume(1); };
+  $('volumeDown').onclick = function () { selectVolume('system'); stepVolume(-1); };
+  if ($('volumeGameUp')) {
+    $('volumeGameUp').onclick = function () { selectVolume('game'); stepVolume(1); };
+    $('volumeGameDown').onclick = function () { selectVolume('game'); stepVolume(-1); };
+    $('volumeSystem').onclick = function () { selectVolume('system'); };
+    $('volumeGame').onclick = function (e) { if (e.target === $('volumeGame') || !e.target.closest('button')) selectVolume('game'); };
+  }
 }
 document.addEventListener('keydown', handleRemoteKey);
 document.addEventListener('click', function (event) { if (event.detail > 0 && event.target.closest('button:not(:disabled)')) playMenuSound('confirm'); });
@@ -954,7 +1050,8 @@ async function initialize() {
     run(async function () { await refresh(); focusSelectedGame(); });
   })();
   else if (session) run(connect);
-  else focusControl(local ? $('newCode') : $('find'));
+  else if (!local && window.LG_BOOTSTRAP) autoPair().then(function (ok) { if (!ok) { syncSetupLook(); focusControl($('code')); } }).catch(function (e) { message(e.message); });
+  else focusControl(local ? $('newCode') : $('code'));
   syncLauncher();
 }
 // Entrada HID do auxiliar: independe da identificação/mapping da Gamepad API do navegador.

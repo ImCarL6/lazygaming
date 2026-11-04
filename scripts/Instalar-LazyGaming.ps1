@@ -3,6 +3,18 @@ param([string]$Package = (Join-Path $PSScriptRoot 'LazyGaming.zip'), [switch]$Qu
 # Instalador por usuário (sem administrador). Executado pelo LazyGaming-Setup.exe (IExpress).
 # Instala em %LOCALAPPDATA%\Programs\LazyGaming; dados e configurações ficam em %LOCALAPPDATA%\LazyGaming e são preservados.
 $ErrorActionPreference = 'Stop'
+$installStage = 'preflight'
+$diagnosticFile = if (!$Root -and !$SkipIntegration) { Join-Path $env:LOCALAPPDATA 'LazyGaming/diagnostics/installer.jsonl' } else { $null }
+function InstallDiagnostic([string]$result, [System.Exception]$failure = $null) {
+    if (!$diagnosticFile) { return }
+    try {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $diagnosticFile) -Force | Out-Null
+        if ((Test-Path -LiteralPath $diagnosticFile) -and (Get-Item -LiteralPath $diagnosticFile).Length -gt 65536) { Move-Item -LiteralPath $diagnosticFile -Destination ($diagnosticFile + '.previous') -Force }
+        $entry = @{ at = [DateTime]::UtcNow.ToString('o'); component = 'installer'; result = $result; stage = $installStage; os = [Environment]::OSVersion.Version.ToString(); errorType = $(if ($failure) { $failure.GetType().FullName }); hresult = $(if ($failure) { $failure.HResult }) }
+        [IO.File]::AppendAllText($diagnosticFile, ($entry | ConvertTo-Json -Compress) + "`n", [Text.UTF8Encoding]::new($false))
+    } catch { }
+}
+InstallDiagnostic 'started'
 Add-Type -AssemblyName System.Windows.Forms
 function Say([string]$text, [string]$icon = 'Information') {
     if (!$Quiet) { [void][System.Windows.Forms.MessageBox]::Show($text, 'LazyGaming', 'OK', $icon) } else { Write-Output $text }
@@ -25,9 +37,11 @@ try {
     $running = @(Get-CimInstance Win32_Process -Filter "Name='LazyGaming.Host.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $exe })
     if ($running.Count) { throw 'O LazyGaming está aberto. Saia pelo ícone da área de notificação (Sair do LazyGaming) e execute o instalador novamente.' }
 
+    $installStage = 'extracting-package'
     Expand-Archive -LiteralPath $Package -DestinationPath $stage -Force
     $content = Join-Path $stage 'LazyGaming'
     $release = Get-Content -LiteralPath (Join-Path $content 'release.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $installStage = 'checking-integrity'
     foreach ($file in $release.files) {
         $path = Join-Path $content ($file.path -replace '/', '\')
         if (!(Test-Path -LiteralPath $path) -or (FileSha256 $path) -ne $file.sha256) { throw "Pacote corrompido: $($file.path). Baixe o instalador novamente." }
@@ -35,6 +49,7 @@ try {
 
     $uninstallSource = Join-Path $PSScriptRoot 'Desinstalar-LazyGaming.ps1'
     if (!(Test-Path -LiteralPath $uninstallSource)) { throw 'Instalador incompleto: Desinstalar-LazyGaming.ps1 ausente. Baixe o instalador novamente.' }
+    $installStage = 'replacing-program'
     New-Item -ItemType Directory -Path $programs -Force | Out-Null
     if (Test-Path -LiteralPath $target) {
         if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Recurse -Force }
@@ -48,6 +63,7 @@ try {
     [IO.File]::WriteAllText($uninstall, [IO.File]::ReadAllText($uninstallSource, [Text.UTF8Encoding]::new($false)), [Text.UTF8Encoding]::new($true))
 
     if ($SkipIntegration) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue; Write-Output "OK $($release.version) em $target"; exit 0 }
+    $installStage = 'registering-shortcuts'
     $shell = New-Object -ComObject WScript.Shell
     $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'LazyGaming'
     New-Item -ItemType Directory -Path $menu -Force | Out-Null
@@ -71,10 +87,13 @@ try {
         Where-Object { (Get-ItemProperty -LiteralPath $_ -Name pv -ErrorAction SilentlyContinue).pv -match '^[1-9]' }
     $note = if ($webview) { '' } else { "`n`nAtenção: o Microsoft Edge WebView2 Runtime não foi encontrado. Instale-o em https://developer.microsoft.com/microsoft-edge/webview2/ para o launcher nativo." }
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    $installStage = 'opening-launcher'
     Start-Process -FilePath $exe -ArgumentList '--open-launcher' -WorkingDirectory $target
+    InstallDiagnostic 'completed'
     # O launcher abrindo em tela cheia é a confirmação; uma caixa de sucesso ficaria atrás dele e prenderia o instalador.
     if ($note) { Say ("LazyGaming $($release.version) instalado.$note") 'Warning' } elseif ($Quiet) { Write-Output "LazyGaming $($release.version) instalado." }
 } catch {
+    InstallDiagnostic 'failed' $_.Exception
     if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
     Say ("Não foi possível instalar: " + $_.Exception.Message) 'Error'; exit 1
 }

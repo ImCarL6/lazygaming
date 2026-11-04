@@ -35,7 +35,7 @@ public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enr
         // Artwork downloads must not hold the game service or delay configuration saves.
         _ = EnrichSafely();
     }
-    async Task EnrichSafely() { try { await enrich(); } catch { } }
+    async Task EnrichSafely() { try { await enrich(); } catch (Exception e) { RuntimeDiagnostics.Report("library", "enrichment-failed", e); } }
     public async Task AutomaticTick(DateTime now) {
         if (enabled?.Invoke() == false) { NextScan = null; return; }
         var preferences = library.Settings.Read();

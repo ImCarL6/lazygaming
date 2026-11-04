@@ -28,7 +28,13 @@ public sealed class GameMetadataStore
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { }
     }
     public GameCustomization Customization(Game game) { lock (sync) return entries.GetValueOrDefault(game.Id) ?? new(); }
-    public GameMetadata? For(Game game) => game.LocalMetadata ?? Customization(game).Metadata;
+    public GameMetadata? For(Game game) {
+        if (game.LocalMetadata != null) return game.LocalMetadata;
+        var saved = Customization(game).Metadata;
+        // A varredura é a fonte das imagens ao lado do emulador. Uma ficha antiga não pode
+        // impedir a busca pública quando essas imagens deixam de existir.
+        return game.Id.StartsWith("emu-", StringComparison.Ordinal) && saved?.Source == "local" ? null : saved;
+    }
     public string DisplayName(Game game) => Customization(game).Name ?? For(game)?.Title ?? game.Name;
     public string? ArtworkId(Game game) => For(game)?.Source == "local" ? game.Id : For(game)?.StoreId ?? game.ArtworkId;
     void Save(string id, GameCustomization item)

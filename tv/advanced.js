@@ -3,9 +3,9 @@
 (function () {
   'use strict';
   if (typeof document === 'undefined' || !document.getElementById('advanced')) return;
-  var library = null, integration = null, busy = false;
+  var library = null, integration = null, pc = null, busy = false;
   function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
-  function note(text) { $('advLibraryNote').textContent = text || ''; }
+  function note(text) { LGNotices.show($('advLibraryNote'), text); }
   function render() {
     if (library) {
       var games = library.games.filter(function (g) { return g.enabled; }), steam = games.filter(function (g) { return g.origin === 'Steam'; });
@@ -26,6 +26,7 @@
       });
       Array.prototype.forEach.call(interval.children, function (b) { b.setAttribute('aria-pressed', String(Number(b.dataset.minutes) === library.preferences.intervalMinutes)); });
     }
+    if (pc) $('advRestoreTv').setAttribute('aria-pressed', String(!!pc.preferences.restoreTvState));
     if (integration) {
       $('advStartup').setAttribute('aria-pressed', String(!!integration.startWithWindows));
       $('advDesktop').setAttribute('aria-pressed', String(!!integration.desktopShortcut));
@@ -35,7 +36,7 @@
   }
   async function guarded(task, text) {
     if (busy) return; busy = true; if (text) note(text);
-    try { await task(); playMenuSound('confirm'); } catch (e) { note(e.message); } finally { busy = false; render(); }
+    try { await task(); playMenuSound('confirm'); } catch (e) { if (typeof LGDiagnostics !== 'undefined') LGDiagnostics.report('advanced-action-failed', e); note(e.message); } finally { busy = false; render(); }
   }
   function save(change) { return guarded(async function () { library = await api('/api/hub/settings', Object.assign({}, library.preferences, change)); note('Salvo. Biblioteca atualizada.'); }, 'Salvando…'); }
   function saveFolders(folders) { return guarded(async function () { library = await api('/api/hub/settings', Object.assign({}, library.preferences, { folders: folders })); note('Pastas atualizadas. ' + library.games.filter(function (g) { return g.enabled; }).length + ' jogos na biblioteca.'); }, 'Procurando jogos…'); }
@@ -43,7 +44,7 @@
   async function open() {
     $('options').hidden = true; $('advanced').hidden = false; syncPointer(); focusControl($('closeAdvanced'));
     note('Carregando…');
-    try { var results = await Promise.all([api('/api/hub'), api('/api/hub/integration')]); library = results[0]; integration = results[1]; note(''); }
+    try { var results = await Promise.all([api('/api/hub'), api('/api/hub/integration'), api('/api/hub/pc-settings')]); library = results[0]; integration = results[1]; pc = results[2]; note(''); }
     catch (e) { note(e.message); }
     // Entrada da TV só quando o Windows vê alguma tela Samsung (gatilho, não prova de TV Tizen).
     api('/api/hub/setup').then(function (s) { $('advTvSection').hidden = !(s.samsungOffer && s.samsungOffer.screens.length); }).catch(function () { $('advTvSection').hidden = true; });
@@ -65,6 +66,15 @@
   $('advScan').onclick = function () { if (library) guarded(async function () { library = await api('/api/hub/scan', {}); note('Busca concluída. ' + library.games.filter(function (g) { return g.enabled; }).length + ' jogos na biblioteca.'); }, 'Procurando jogos…'); };
   $('advSteamToggle').onclick = function () { if (library) save({ steam: library.preferences.steam === false }); };
   $('advAuto').onclick = function () { if (library) save({ automatic: library.preferences.automatic === false }); };
+  // Mesma preferência da Central (RestoreTvState): só muda o fim da sessão; gravada pelo endpoint que preserva o resto.
+  $('advRestoreTv').onclick = function () {
+    if (!pc) return;
+    guarded(async function () {
+      var next = Object.assign({}, pc.preferences, { restoreTvState: !pc.preferences.restoreTvState });
+      await api('/api/hub/pc-settings', next); pc = await api('/api/hub/pc-settings');
+      note(pc.preferences.restoreTvState ? 'A TV volta a desligar ao terminar o jogo.' : 'A TV continua ligada ao terminar o jogo.');
+    });
+  };
   $('advStartup').onclick = function () { if (integration) setIntegration({ startWithWindows: !integration.startWithWindows }); };
   $('advDesktop').onclick = function () { if (integration) setIntegration({ desktopShortcut: !integration.desktopShortcut }); };
   $('advGuide').onclick = function () { if (integration) setIntegration({ blockSteamGuide: integration.blockSteamGuide === false }); };
@@ -79,5 +89,6 @@
     else { $('options').hidden = false; focusControl($('advancedSettings')); }
   };
   $('advCentral').onclick = function () { guarded(async function () { await api('/api/hub/launch', {}); note('Central aberta no navegador do PC.'); }); };
+  $('advDiagnostics').onclick = function () { guarded(async function () { await api('/api/hub/diagnostics/open', {}); note('Relatório preparado. A pasta de relatórios foi aberta no PC.'); }); };
   window.LGAdvanced = { close: close, get open() { return !$('advanced').hidden; } };
 }());

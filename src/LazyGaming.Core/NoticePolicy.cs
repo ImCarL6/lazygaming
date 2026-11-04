@@ -14,5 +14,5 @@ public sealed class NoticePolicy
             shown[key] = now; last = now; return true;
         }
     }
-    public static int ReadingDuration(string text) => Math.Clamp(2000 + Math.Min(text.Length,150) * 30,3500,6500);
+    public static int ReadingDuration(string text) => 2800;
 }

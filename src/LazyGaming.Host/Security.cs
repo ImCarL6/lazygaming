@@ -40,6 +40,30 @@ public sealed class Security
             return Issue();
         }
     }
+    // Convite embutido no app instalado pelo próprio PC (via SDB, na TV em Developer Mode apontando para este PC):
+    // ficha aleatória de uso único, guardada só como hash, válida por tempo limitado e resistente a reinício do auxiliar.
+    string InviteFile => Path.Combine(Path.GetDirectoryName(file)!, "install-invite.json");
+    public string IssueInvite(TimeSpan ttl) {
+        lock (gate) {
+            var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+            var invite = new Invite(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(token))), DateTime.UtcNow.Add(ttl));
+            File.WriteAllText(InviteFile + ".tmp", JsonSerializer.Serialize(invite)); File.Move(InviteFile + ".tmp", InviteFile, true);
+            inviteAttempts = 0; return token;
+        }
+    }
+    int inviteAttempts;
+    public object PairInvite(string token) {
+        lock (gate) {
+            Invite? invite = null;
+            try { invite = JsonSerializer.Deserialize<Invite>(File.ReadAllText(InviteFile)); } catch (Exception e) when (e is IOException or JsonException) { }
+            var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(token ?? "")));
+            if (invite == null || DateTime.UtcNow > invite.Expires || ++inviteAttempts > 10 || !Equal(invite.Hash, hash))
+                throw new InvalidOperationException("Convite de instalação inválido ou expirado. Mostre o código no PC.");
+            File.Delete(InviteFile);
+            return Issue();
+        }
+    }
+    record Invite(string Hash, DateTime Expires);
     // Só chamado após autorização pelo vínculo independente de recuperação.
     public object RecoverPairing() { lock (gate) return Issue(); }
     object Issue() {

@@ -33,6 +33,22 @@ try{
  assert.equal((await call('/api/hub/controller-capture')).response.status,401);
  assert.equal((await call('/api/hub/controller')).response.status,401);
  assert.equal((await hub('/api/hub/controller')).response.status,200);
+ assert.equal((await call('/api/diagnostics/report',{code:'test'})).response.status,401,'diagnóstico exige autenticação');
+ assert.equal((await hub('/api/diagnostics/report',{code:'test-ui',message:'token=PrivateDiagnosticToken123'})).response.status,200,'sessão da Central pode registrar falha da própria UI');
+ assert.equal((await hub('/api/diagnostics/report',{code:'test'},'https://example.com')).response.status,401,'origem externa não envia relatório pela sessão local');
+ assert.equal((await hub('/api/hub/diagnostics/open',{})).response.status,200,'exportação isolada não abre Explorer real');
+ const run=JSON.parse(readFileSync(join(data,'diagnostics','current-run.json'),'utf8')).run;
+ const diagnosticLog=()=>readFileSync(join(data,'diagnostics',run,'events.jsonl'),'utf8').split('\n').filter(Boolean).map(x=>JSON.parse(x));
+ assert.ok(diagnosticLog().some(x=>x.component==='frontend'&&x.code==='test-ui'),'falha da UI chegou ao relatório local');
+ assert.ok(!readFileSync(join(data,'diagnostics',run,'events.jsonl'),'utf8').includes('PrivateDiagnosticToken123'),'token do teste foi removido antes de gravar');
+ const revision=(await signed('/api/launcher/sync?after=-1')).value.revision;
+ const route='/api/launcher/sync?after='+revision,stamp=String(Date.now()),nonce=randomBytes(16).toString('hex');
+ const abort=new AbortController(),abortTimer=setTimeout(()=>abort.abort(),150);
+ let aborted=false;
+ try{await fetch(base+route,{signal:abort.signal,headers:{'X-LG-Time':stamp,'X-LG-Nonce':nonce,'X-LG-Signature':createHmac('sha256',Buffer.from(key,'hex')).update(`GET\n${route}\n${stamp}\n${nonce}\n`).digest('hex')}});}catch(error){assert.equal(error.name,'AbortError');aborted=true;}finally{clearTimeout(abortTimer);}
+ assert.ok(aborted,'long polling foi efetivamente interrompido');
+ await new Promise(r=>setTimeout(r,150));
+ assert.ok(!diagnosticLog().some(x=>x.code==='unhandled-request'&&x.detail?.route==='/api/launcher/sync'),'cancelar long polling normal não gera falso crash');
  assert.equal((await hub('/api/hub/controller-capture',{},'https://example.com')).response.status,401);
  assert.equal((await hub('/api/hub/controller-capture',{})).response.status,200);
  assert.equal((await hub('/api/hub/controller-capture',{})).response.status,409,'capture is exclusive');

@@ -23,6 +23,7 @@ public sealed class PcTray : IDisposable
             async Task Execute(Func<Task> action) {
                 try { await action(); }
                 catch (Exception e) {
+                    RuntimeDiagnostics.Report("tray", "action-failed", e);
                     var message = e is InvalidOperationException ? e.Message : "Não foi possível concluir. Tente novamente.";
                     if (!disposed && notices.Accept(message,Environment.TickCount64)) {
                         try { icon.ShowBalloonTip(NoticePolicy.ReadingDuration(message),"LazyGaming",message,ToolTipIcon.Info); }

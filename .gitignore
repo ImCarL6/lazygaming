@@ -10,6 +10,7 @@
 *.pri
 *.csr
 *.crt
+!src/LazyGaming.Host/SamsungCA/vd_tizen_dev_public2.crt
 /private/
 /certificates/
 /logs/

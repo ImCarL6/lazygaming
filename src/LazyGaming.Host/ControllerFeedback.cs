@@ -27,10 +27,10 @@ public sealed class ControllerFeedback : IDisposable
         }) { IsBackground = true, Name = "LazyGaming feedback" };
         ui.SetApartmentState(ApartmentState.STA); ui.Start();
     }
-    public void Notify(bool enabled, int duration = 1400)
+    public void Notify(bool enabled, int duration = 2800)
     {
         if (disposed || !modes.Accept(enabled.ToString(),Environment.TickCount64,800,0)) return;
-        Interlocked.Exchange(ref pending,new(enabled,null,Math.Clamp(duration,500,6500)));
+        Interlocked.Exchange(ref pending,new(enabled,null,Math.Clamp(duration,500,3000)));
         var form = Volatile.Read(ref window);
         try { if (form is { IsHandleCreated: true }) form.BeginInvoke(Drain); } catch { }
     }

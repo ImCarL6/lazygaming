@@ -5,12 +5,14 @@ namespace LazyGaming;
 public sealed record PcPreferences(string? DisplayPath = null, bool RestoreTvState = false,
     string ControllerSource = "auto", ControllerOptions? Controller = null, string? AudioDeviceId = null, bool Enabled = true,
     bool TvIntegrationEnabled = false, bool SetupCompleted = false, bool SamsungHintDismissed = false, bool? ConfirmBackOverride = null,
-    bool DualSenseBluetoothFeatures = true, bool BlockSteamGuide = true)
+    bool DualSenseBluetoothFeatures = true, bool BlockSteamGuide = true,
+    bool TvAutoInstall = false, string? TizenToolsPath = null, string? TvAddress = null, bool TvSetupResume = false)
 {
     public ControllerOptions Controls => Controller ?? new();
     public void Validate() {
         if (ControllerSource is not ("auto" or "dualsense" or "xinput" or "switch-pro") ||
-            DisplayPath is { Length: > 512 } || AudioDeviceId is { Length: > 512 })
+            DisplayPath is { Length: > 512 } || AudioDeviceId is { Length: > 512 } || TizenToolsPath is { Length: > 512 } ||
+            TvAddress != null && !System.Net.IPAddress.TryParse(TvAddress, out _))
             throw new InvalidOperationException("Configuração do PC inválida.");
         Controls.Validate();
     }

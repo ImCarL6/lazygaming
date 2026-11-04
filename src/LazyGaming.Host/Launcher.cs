@@ -344,7 +344,10 @@ public static class WindowFocus
     [DllImport("user32.dll", EntryPoint = "SetWindowLongW")] static extern int SetWindowLong(nint window, int index, int value);
     public static bool MatchesBounds(nint window, System.Drawing.Rectangle bounds) {
         using var dpi = PhysicalCoordinates();
-        return GetWindowRect(window, out var rect) && rect.Left == bounds.Left && rect.Top == bounds.Top && rect.Right == bounds.Right && rect.Bottom == bounds.Bottom;
+        var origin = new ClientPoint();
+        return GetWindowRect(window, out var rect) && rect.Left == bounds.Left && rect.Top == bounds.Top && rect.Right == bounds.Right && rect.Bottom == bounds.Bottom
+            && GetClientRect(window, out var client) && ClientToScreen(window, ref origin)
+            && origin.X == bounds.Left && origin.Y == bounds.Top && client.Right == bounds.Width && client.Bottom == bounds.Height;
     }
     public static IDisposable PhysicalCoordinates() => new DpiContext();
     sealed class DpiContext : IDisposable {
@@ -355,8 +358,9 @@ public static class WindowFocus
     public static object Inspect(nint window) {
         using var dpi = PhysicalCoordinates();
         GetWindowRect(window, out var rect);
+        GetClientRect(window, out var client);
         var foreground = GetForegroundWindow(); GetWindowThreadProcessId(foreground, out var foregroundPid);
-        return new { window = (long)window, foreground = foreground == window, inputFocused = HasInputFocus(window), visible = IsWindowVisible(window), minimized = IsIconic(window), foregroundPid, left = rect.Left, top = rect.Top, width = rect.Right - rect.Left, height = rect.Bottom - rect.Top };
+        return new { window = (long)window, foreground = foreground == window, inputFocused = HasInputFocus(window), visible = IsWindowVisible(window), minimized = IsIconic(window), foregroundPid, left = rect.Left, top = rect.Top, width = rect.Right - rect.Left, height = rect.Bottom - rect.Top, clientWidth = client.Right, clientHeight = client.Bottom };
     }
     public static GamePlacement KeepGamePlacement(Func<nint>? gameWindow) => new GamePlacement(gameWindow);
     public sealed class GamePlacement : IDisposable {
@@ -384,6 +388,9 @@ public static class WindowFocus
     }
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] static extern bool GetWindowRect(nint window, out Rect rect);
+    [DllImport("user32.dll")] static extern bool GetClientRect(nint window, out Rect rect);
+    [StructLayout(LayoutKind.Sequential)] struct ClientPoint { public int X, Y; }
+    [DllImport("user32.dll")] static extern bool ClientToScreen(nint window, ref ClientPoint point);
     [DllImport("user32.dll")] static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
     public static IDisposable KeepAcrossDisplayChange() => new DisplayFocus();
     sealed class DisplayFocus : IDisposable {

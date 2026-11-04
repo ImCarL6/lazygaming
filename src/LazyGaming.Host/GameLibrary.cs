@@ -66,7 +66,8 @@ public sealed class GameLibrary
         return null;
     }
     static string Compact(string text) => Regex.Replace(text.ToLowerInvariant(), "[^a-z0-9]", "");
-    public static bool IsHelper(string name) => Regex.IsMatch(name, "crash|unins|setup|install|server|anticheat|redist|dxsetup|webhelper|unitycrash|vc_redist|_xlate(?:\\.exe)?$|shader.*compil", RegexOptions.IgnoreCase);
+    public static bool IsHelper(string name) => Regex.IsMatch(name, "crash|unins|setup|install|server|anticheat|redist|dxsetup|webhelper|unitycrash|vc_redist|_xlate(?:\\.exe)?$|shader.*compil", RegexOptions.IgnoreCase)
+        || Regex.IsMatch(name, "^(pythonw?\\d*(\\.\\d+)*|pip\\d*(\\.\\d+)*|f2py|numpy-config|node|npm|npx|javaw?|git|7z|ffmpeg|ffprobe|cmake|conda|py)\\.exe$", RegexOptions.IgnoreCase);
     public static string LocalId(string folder) => "local-" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant())))[..12];
     public static string IdentifyLocalTitle(string folder, string executable)
     {
@@ -102,7 +103,7 @@ public sealed class GameLibrary
                 foreach (var child in System.IO.Directory.EnumerateDirectories(folder))
                 {
                     var name = Path.GetFileName(child);
-                    if (Regex.IsMatch(name, "redist|extras|anticheat|support|prereq|crash|\\.git|node_modules|Engine|dotnet", RegexOptions.IgnoreCase)) continue;
+                    if (Regex.IsMatch(name, "redist|extras|anticheat|support|prereq|crash|\\.git|node_modules|Engine|dotnet|^\\.?venv$|^env$|site-packages|__pycache__|^python\\d*$|^Scripts$", RegexOptions.IgnoreCase)) continue;
                     if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0) Scan(child, depth + 1);
                 }
             }
@@ -196,6 +197,16 @@ public sealed class GameLibrary
             if (games.Any(g => string.Equals(g.Folder, Path.TrimEndingDirectorySeparator(folder), StringComparison.OrdinalIgnoreCase)
                 || g.Folder != null && folder.StartsWith(g.Folder.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))) continue;
             var candidates = Exes(folder);
+            // Emulador: uma capa por jogo encontrado na mesma pasta de busca (o emulador sozinho não é um jogo).
+            var emulator = candidates.FirstOrDefault(EmulatorLibrary.IsEmulator);
+            if (emulator != null) {
+                var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(folder));
+                var searchRoot = scanChildren && parent != null && preferences.Folders.Any(f => f.Enabled && string.Equals(Path.TrimEndingDirectorySeparator(f.Path), parent, StringComparison.OrdinalIgnoreCase)) ? parent : folder;
+                var found = EmulatorLibrary.Index(emulator, searchRoot);
+                if (found.Count == 0) notes.Add(Path.GetFileName(folder) + ": emulador sem jogos compatíveis encontrados");
+                games.AddRange(found.Where(g => !games.Any(x => x.Id == g.Id)));
+                continue;
+            }
             var process = SelectLocalProcess(folder, candidates);
             if (process == null) { notes.Add(Path.GetFileName(folder) + ": nenhum executável de jogo identificado"); continue; }
             if (games.Any(g => string.Equals(g.ProcessPath, process, StringComparison.OrdinalIgnoreCase))) continue;

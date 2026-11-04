@@ -38,6 +38,7 @@ public static class ProcessImage
     }
     sealed class Lifetime(SafeProcessHandle handle, bool synchronized) : IProcessLifetime {
         public bool Exited => synchronized ? WaitForSingleObject(handle, 0) == 0 : GetExitCodeProcess(handle, out var code) && code != 259;
+        public uint? ExitCode => Exited && GetExitCodeProcess(handle, out var code) ? code : null;
         public void Dispose() => handle.Dispose();
     }
     [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);

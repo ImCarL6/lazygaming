@@ -3,6 +3,9 @@ using LazyGaming;
 if (args.Contains("--process-lifetime-fixture")) { await Task.Delay(1000); Environment.Exit(259); return; }
 if (args.Contains("--runtime-identity-fixture")) { await Task.Delay(30000); return; }
 if (args.Contains("--verify-runtime-identity")) { RuntimeIdentityTests.Run(); return; }
+if (args.Contains("--verify-game-resolution")) { GameResolutionTests.Run(); return; }
+if (args.Length == 2 && args[0] == "--diagnostics-interrupted-fixture") { RuntimeDiagnosticsTests.InterruptedFixture(args[1]); return; }
+if (args.Contains("--verify-diagnostics")) { await RuntimeDiagnosticsTests.Run(); return; }
 if (args.Length == 3 && args[0] == "--monitor-preference-fixture") {
     new TvSession(args[1], new FakeOutput()).SetMonitors(bool.Parse(args[2]));
     Console.WriteLine("saved"); Console.Out.Flush();
@@ -52,12 +55,43 @@ HostStartupTests.Run();
 await PcCompatibilityTests.Run();
 await DisplayPreferenceTests.Run();
 StreamingTests.Run();
+GameResolutionTests.Run();
+await RuntimeDiagnosticsTests.Run();
+GameExitDiagnosticsTests.Run();
 PairingRecoveryTests.Run();
 RuntimeIdentityTests.Run();
 ControllerMenuTests.Run();
 InputFocusHandoffTests.Run();
 LauncherOpeningFocusTests.Run();
 TaskbarOverflowTests.Run();
+await TvInstallerTests.Run();
+await SamsungCertificateTests.Run();
+EmulatorLibraryTests.Run();
+{
+    // Sessões de áudio reais (somente leitura): valida as interfaces do mixer do Windows sem alterar volume.
+    var seen = new List<int>();
+    var any = Audio.SessionVolume(pid => { seen.Add(pid); return true; });
+    Assert(seen.Count == 0 || any is { Level: >= 0 and <= 100 }, "mixer do Windows lido");
+    Assert(Audio.SessionVolume(_ => false) == null, "sem processo correspondente não há volume");
+    Console.WriteLine($"PASS: mixer do Windows lido ({seen.Count} sessões de áudio, nenhuma alterada).");
+    // Escrita real num processo de teste que toca um som; o volume original desse app no mixer é restaurado.
+    var wav = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Media", "Windows Ding.wav");
+    if (File.Exists(wav)) {
+        var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe", "-NoProfile -Command \"$p = New-Object Media.SoundPlayer '" + wav + "'; for ($i = 0; $i -lt 12; $i++) { $p.PlaySync() }\"") { CreateNoWindow = true, UseShellExecute = false };
+        using var player = System.Diagnostics.Process.Start(psi)!;
+        try {
+            Audio.AppVolume? original = null;
+            for (int i = 0; i < 40 && original == null; i++) { await Task.Delay(100); original = Audio.SessionVolume(pid => pid == player.Id); }
+            Assert(original != null, "sessão do processo de teste encontrada");
+            try {
+                var changed = Audio.SetSessionVolume(pid => pid == player.Id, 35);
+                Assert(changed is { Level: 35 } && Audio.SessionVolume(pid => pid == player.Id) is { Level: 35 }, "volume do app ajustado e relido");
+            } finally { Audio.SetSessionVolume(pid => pid == player.Id, original!.Level); }
+            Assert(Audio.SessionVolume(pid => pid == player.Id)?.Level == original!.Level, "volume original restaurado");
+            Console.WriteLine("PASS: volume por aplicativo ajustado de verdade e restaurado.");
+        } finally { try { player.Kill(); } catch { } }
+    }
+}
 NativeDesktopTests.Run();
 await LibraryMetadataTests.Run();
 await LocalGameTests.Run();

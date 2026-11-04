@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -5,9 +6,9 @@ using System.Text.Json;
 
 namespace LazyGaming;
 
-public sealed class ArtworkStore(GameLibrary library)
+public sealed class ArtworkStore(GameLibrary library, HttpClient? client = null)
 {
-    readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    readonly HttpClient http = client ?? new() { Timeout = TimeSpan.FromSeconds(10) };
     readonly SemaphoreSlim downloads = new(2, 2);
     readonly SemaphoreSlim refresh = new(1, 1);
     public string Root => Path.Combine(library.Directory, "library", "art");
@@ -35,8 +36,9 @@ public sealed class ArtworkStore(GameLibrary library)
             await downloads.WaitAsync();
             try {
                 if (library.Metadata.For(game)?.Source == "local") EnsureLocal(game);
+                else if (game.Id.StartsWith("emu-", StringComparison.Ordinal) && library.Metadata.For(game)?.StoreId == null) await EnsureEncyclopedia(game);
                 else await Ensure(game with { ArtworkId = library.Metadata.ArtworkId(game) });
-            } catch { /* Arte ausente tem fallback; não impede administrar o jogo. */ }
+            } catch (Exception e) { RuntimeDiagnostics.Report("artwork", "prepare-failed", e); }
             finally { downloads.Release(); }
         })); } finally { refresh.Release(); }
     }
@@ -46,20 +48,72 @@ public sealed class ArtworkStore(GameLibrary library)
         if (metadata.Artwork is not LocalArtwork art) return;
         var folder = Path.Combine(Root, game.Id); Directory.CreateDirectory(folder);
         foreach (var (kind, relative, url) in new[] { ("cover", art.Cover, art.CoverSourceUrl), ("backdrop", art.Backdrop, art.BackdropSourceUrl) }) {
-            var source = GameLibrary.SafeInside(Path.Combine(library.Directory, "library"), relative);
+            // Jogos de emulador usam a imagem ao lado do jogo (caminho absoluto achado pela própria varredura); fichas importadas, só dentro da biblioteca.
+            var source = game.Id.StartsWith("emu-", StringComparison.Ordinal) && Path.IsPathFullyQualified(relative) && Regex.IsMatch(Path.GetExtension(relative), @"^\.(jpe?g|png|webp)$", RegexOptions.IgnoreCase)
+                ? relative : GameLibrary.SafeInside(Path.Combine(library.Directory, "library"), relative);
             if (source == null || !File.Exists(source)) continue;
             var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(source)));
             var target = Path.Combine(folder, kind + ".jpg"); var stamp = target + ".source.json";
             var provenance = JsonSerializer.Serialize(new { source = "local", page = metadata.SourceUrl, image = url, sha256 = hash });
             if (File.Exists(target) && File.Exists(stamp) && File.ReadAllText(stamp) == provenance) continue;
-            using var input = File.OpenRead(source); OptimizeLocal(input, target, kind);
+            using (var input = File.OpenRead(source)) OptimizeLocal(input, target, kind);
+            if (kind == "cover" && game.Id.StartsWith("emu-", StringComparison.Ordinal)) { using var icon = File.OpenRead(source); OptimizeLocal(icon, Path.Combine(folder, "icon.jpg"), "icon"); }
             File.WriteAllText(stamp, provenance);
         }
+    }
+    // Jogos de emulador (sem loja no PC): capa oficial pela Wikipédia, só quando o título do artigo confere com o jogo.
+    // Sem achar, tenta de novo no máximo uma vez por dia. Funciona igual em qualquer PC; a TV recebe a mesma imagem pelo auxiliar.
+    async Task EnsureEncyclopedia(Game game)
+    {
+        var folder = Path.Combine(Root, game.Id); Directory.CreateDirectory(folder);
+        var target = Path.Combine(folder, "cover.jpg"); var stamp = target + ".source.json";
+        if (File.Exists(stamp) && (File.Exists(target) || File.GetLastWriteTimeUtc(stamp) > DateTime.UtcNow.AddDays(-1))) return;
+        var found = await EncyclopediaCover(http, game.Name);
+        if (found is not { } cover) { File.WriteAllText(stamp, JsonSerializer.Serialize(new { source = "wikipedia", found = false })); return; }
+        using var request = new HttpRequestMessage(HttpMethod.Get, cover.Image);
+        request.Headers.UserAgent.ParseAdd(EncyclopediaUserAgent);
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength > 8_000_000) return;
+        var bytes = await response.Content.ReadAsByteArrayAsync();
+        if (bytes.Length > 8_000_000) return;
+        using (var input = new MemoryStream(bytes)) OptimizeLocal(input, target, "cover");
+        using (var input = new MemoryStream(bytes)) OptimizeLocal(input, Path.Combine(folder, "icon.jpg"), "icon");
+        File.WriteAllText(stamp, JsonSerializer.Serialize(new { source = "wikipedia", page = cover.Page, image = cover.Image }));
+    }
+    public static async Task<(string Page, string Image)?> EncyclopediaCover(HttpClient http, string title)
+    {
+        foreach (var language in new[] { "en", "pt" })
+            try { if (await EncyclopediaCover(http, title, language) is { } found) return found; }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException) { }
+        return null;
+    }
+    static string EncyclopediaUserAgent => "LazyGaming/" + (typeof(ArtworkStore).Assembly.GetName().Version?.ToString(3) ?? "1") + " (game launcher artwork)";
+    static async Task<(string Page, string Image)?> EncyclopediaCover(HttpClient http, string title, string language)
+    {
+        var url = "https://" + language + ".wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=3&prop=pageimages&piprop=original&pilicense=any&gsrsearch="
+            + Uri.EscapeDataString(title + (language == "pt" ? " jogo eletrônico" : " video game"));
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.UserAgent.ParseAdd(EncyclopediaUserAgent);
+        using var response = await http.SendAsync(request);
+        if (!response.IsSuccessStatusCode) return null;
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        if (!doc.RootElement.TryGetProperty("query", out var query) || !query.TryGetProperty("pages", out var pages)) return null;
+        static string C(string s) => Regex.Replace(s.ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD), "[^a-z0-9]", "");
+        var wanted = C(title);
+        foreach (var page in pages.EnumerateObject().Select(p => p.Value).OrderBy(p => p.TryGetProperty("index", out var i) ? i.GetInt32() : 99)) {
+            var name = page.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+            var key = C(Regex.Replace(name, @"\s*\(.*\)$", ""));
+            if (key.Length == 0 || !(key == wanted || key.Contains(wanted) && wanted.Length >= 5 || wanted.Contains(key) && key.Length >= 5)) continue;
+            if (page.TryGetProperty("original", out var original) && original.TryGetProperty("source", out var source) && source.GetString() is { } image
+                && image.StartsWith("https://upload.wikimedia.org/", StringComparison.Ordinal)) return (name, image);
+        }
+        return null;
     }
     void EnsureIcon(Game game)
     {
         var folder = Path.Combine(Root, game.Id); System.IO.Directory.CreateDirectory(folder);
-        var target = Path.Combine(folder, "icon.jpg"); if (File.Exists(target) || !File.Exists(game.ProcessPath)) return;
+        var target = Path.Combine(folder, "icon.jpg"); if (game.Id.StartsWith("emu-", StringComparison.Ordinal) || File.Exists(target) || !File.Exists(game.ProcessPath)) return;
         try { using var icon = Icon.ExtractIcon(game.ProcessPath, 0, 256); if (icon == null) return;
             using var bitmap = icon.ToBitmap(); using var input = new MemoryStream(); bitmap.Save(input, ImageFormat.Png); input.Position = 0; Optimize(input, target, "icon"); }
         catch (Exception e) when (e is ArgumentException or IOException or System.ComponentModel.Win32Exception) { }

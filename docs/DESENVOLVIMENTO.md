@@ -41,3 +41,5 @@ CI Windows usa permissões somente de leitura: restaura dependências, audita o 
 ## Aceite antes de instalar esta reorganização
 
 Conferir navegação PC/Samsung, microfone USB/BT completo, fallback Create+Options no BT básico, movimento e pressão de um/dois dedos, perda/retorno de foco, desconexão/reconexão, abertura/retorno e restauração de sessão Cabo/Stream. Jogos com entrada em background continuam sem isolamento universal. A execução física desta rodada é pendente até registro explícito no estado local.
+
+Diagnóstico da instalação na TV, somente leitura (descobre a TV, confere Developer Mode/ferramentas/acesso e versão instalada, nunca instala): `LazyGaming.Host.exe --tv-check [--tizen PASTA]`. Com `--package-to PASTA` só empacota e assina o WGT localmente pelo mesmo caminho da instalação automática.

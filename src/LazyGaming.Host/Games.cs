@@ -20,6 +20,9 @@ public interface IGamePlatform
 public sealed class WindowsGames(GameLibrary library, string directory) : IGamePlatform, IDisposable
 {
     readonly ClosingGames closing = new();
+    readonly GameExitDiagnostics exits = new(p => ProcessImage.Track(p.Pid, p.Path), e => RuntimeDiagnostics.Current?.Record("game-exit",
+        e.Forced ? "forced-exit" : e.Code == null ? "exit-code-unavailable" : e.Code is > 0 ? "nonzero-exit" : "exited", !e.Forced && e.Code is not 0,
+        detail: new { game = e.Game, pid = e.Pid, exitCode = e.Code, forced = e.Forced, seconds = Math.Round(e.Seconds, 1) }));
     string? lastIdentificationError;
     volatile GameWindowTarget? windowTarget;
     readonly TaskbarOverflow taskbarOverflow = new(directory);
@@ -66,6 +69,7 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
         var diagnostic = System.Text.Json.JsonSerializer.Serialize(new { pid = process.Pid, positioned, focused, phase = windowTarget?.Phase, window = WindowFocus.Inspect(window) });
         if (diagnostic != lastFocusState) {
             lastFocusState = diagnostic;
+            RuntimeDiagnostics.Trace("game-window", "placement", System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(diagnostic));
             try { File.WriteAllText(Path.Combine(directory, "game-focus-status.json"), diagnostic); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             try {
                 var trace = Path.Combine(directory, "game-focus-history.jsonl");
@@ -103,6 +107,7 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
                 }
             }
         }
+        if (RuntimeDiagnostics.Current != null) exits.Observe(result, process => library.Games.FirstOrDefault(g => LaunchChoices.Matches(g, process))?.Id ?? "unknown");
         return result;
     }
     static bool StillListed(string name, int? pid = null) {
@@ -116,7 +121,7 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
         lastIdentificationError = json;
         try { File.WriteAllText(Path.Combine(directory, "process-identification-status.json"), json); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
-    public void Dispose() => closing.Dispose();
+    public void Dispose() { exits.Dispose(); closing.Dispose(); }
     public static bool RuntimeMatches(int pid, string argument)
     {
         // WMI consulta o comando do runtime específico do jogo; não lê memória do jogo.
@@ -156,17 +161,20 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
     {
         try { LaunchCore(game, mode); }
         catch (Exception e) {
+            RuntimeDiagnostics.Report("game", "launch-failed", e, new { game = game.Id, mode });
             File.WriteAllText(Path.Combine(directory, "last-launch-error.json"), System.Text.Json.JsonSerializer.Serialize(new { game = game.Id, mode, error = e.Message, at = DateTime.UtcNow }));
             throw;
         }
     }
     void LaunchCore(Game game, string mode)
     {
-        GameDisplaySettings.Prepare(game, directory);
+        RuntimeDiagnostics.Trace("game", "preparing-video", new { game = game.Id, mode });
+        var target = GameDisplaySettings.Prepare(game, directory);
+        RuntimeDiagnostics.Trace("game", "video-prepared", new { width = target.Bounds.Width, height = target.Bounds.Height, monitor = target.Monitor, steam = game.Steam, runtime = game.ProcessArgument != null });
         if (game.Id == "steam-632360") {
             if (!File.Exists(Path.Combine(Path.GetDirectoryName(game.ProcessPath)!, "UnityPlayer.dll")))
                 throw new InvalidOperationException("A instalação Unity do Risk of Rain 2 não foi identificada.");
-            var target = LaunchDisplay.Current();var bounds=target.Bounds;
+            var bounds=target.Bounds;
             var launch = new ProcessStartInfo(Path.Combine(library.SteamPath, "steam.exe")) { UseShellExecute = false };
             foreach (var argument in GameDisplaySettings.RiskLaunchArguments(target.Monitor, bounds.Width, bounds.Height)) launch.ArgumentList.Add(argument);
             Process.Start(launch);
@@ -174,7 +182,7 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
         }
         var info = game.Steam ? SteamLaunchInfo(game, library.SteamPath) : LaunchInfo(game);
         if (GameDisplaySettings.CanUseUnityDisplayArguments(game)) {
-            var target = LaunchDisplay.Current();var bounds=target.Bounds;
+            var bounds=target.Bounds;
             foreach (var argument in GameDisplaySettings.UnityDisplayArguments(target.Monitor, bounds.Width, bounds.Height)) info.ArgumentList.Add(argument);
         }
         using var launched = Process.Start(info);
@@ -225,8 +233,8 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
     }
     public void ForceClose(Running process) {
         var lifetime = ProcessImage.Track(process.Pid, process.Path);
-        try { using var p = Verified(process); if (!lifetime.Exited) p.Kill(false); closing.Add(process, lifetime); windowTarget?.Cancel(process.Path); }
-        catch { lifetime.Dispose(); throw; }
+        try { using var p = Verified(process); if (!lifetime.Exited) { exits.Forced(process.Pid); p.Kill(false); } closing.Add(process, lifetime); windowTarget?.Cancel(process.Path); }
+        catch { exits.Forced(process.Pid, false); lifetime.Dispose(); throw; }
     }
 }
 
@@ -285,6 +293,10 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
         var running = platform.Processes();
         ExpireOpening(running);
         if (starting != null && running.Any(p => LaunchChoices.Matches(catalog.Single(g => g.Id == starting), p))) starting = null;
+        var startError = openingError ?? platform.DisplayError ?? (starting != null && deadline <= DateTime.UtcNow &&
+            !running.Any(p => LaunchChoices.Matches(catalog.Single(g => g.Id == starting), p))
+            ? "O jogo não abriu no tempo esperado. Confira o launcher no PC antes de tentar novamente." : null);
+        RuntimeDiagnostics.State("game-start", startError);
         return new { environment = environment.Status, games = catalog.Select(g => new { g.Id, name = library.Metadata.DisplayName(g), origin = g.Steam ? "Steam" : "PC", artworkId = library.Metadata.ArtworkId(g), releaseYear = library.Metadata.For(g)?.Year,
             available = File.Exists(g.ProcessPath) && (g.Choices == null || g.Choices.Any(v => File.Exists(v.ContentPath))),
             choiceLabel = g.ChoiceLabel, selectedChoice = preferences.Get(g),
@@ -292,9 +304,7 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
             runningChoice = g.Choices?.FirstOrDefault(v => running.Any(p => LaunchChoices.Matches(g, p) && string.Equals(p.Argument, v.ContentPath, StringComparison.OrdinalIgnoreCase)))?.Id,
             running = running.Any(p => LaunchChoices.Matches(g, p)),
             starting = starting == g.Id && deadline > DateTime.UtcNow }).ToArray(),
-            startError = openingError ?? platform.DisplayError ?? (starting != null && deadline <= DateTime.UtcNow &&
-                !running.Any(p => LaunchChoices.Matches(catalog.Single(g => g.Id == starting), p))
-                ? "O jogo não abriu no tempo esperado. Confira o launcher no PC antes de tentar novamente." : null) };
+            startError };
         } finally { gate.Release(); }
     }
     public async Task MoveToTv(string id, CancellationToken cancellation = default)

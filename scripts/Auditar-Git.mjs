@@ -1,4 +1,12 @@
 import { execFileSync } from 'node:child_process';
+import { X509Certificate } from 'node:crypto';
+
+// Somente estas duas CAs públicas, identificadas pelo certificado DER. Chaves e
+// certificados pessoais continuam proibidos, inclusive dentro de SamsungCA.
+const publicCa = new Map([
+  ['src/LazyGaming.Host/SamsungCA/vd_tizen_dev_author_ca.cer','5079196a1c32872a8bce74523fc12ad3557e2d87c56fafba7c6d09dced13b710'],
+  ['src/LazyGaming.Host/SamsungCA/vd_tizen_dev_public2.crt','bf18859eb024cc1d63f008dcddd643077b0de53e958f35993ff0088d1a1d31ae']
+]);
 
 // Inspect the actual Git index, not untracked private data or a different working copy.
 const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
@@ -18,8 +26,15 @@ for (const file of files) {
     'docs/MIGRACAO-0.15.md', 'docs/INTEGRACAO-TV.md', 'docs/ATUALIZACOES-COMPARTILHADAS.md',
     'docs/PROMPT-HENRIQUE-0.15.md', 'docs/ESTADO-DERIVADO-MODELO.md', 'docs/VERSOES-DE-JOGO.md', 'docs/PC-PARA-AMIGOS.md'
   ].includes(file);
-  if (forbidden.test(file) || privateDoc) { console.error('Arquivo privado/produto de build no índice:', file); failures++; continue; }
+  if ((forbidden.test(file) && !publicCa.has(file)) || privateDoc) { console.error('Arquivo privado/produto de build no índice:', file); failures++; continue; }
   const bytes = execFileSync('git', ['show', `:${file}`], { maxBuffer: 16 * 1024 * 1024 });
+  if (publicCa.has(file)) {
+    try {
+      if (!/^\s*-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*$/.test(bytes.toString('utf8')) ||
+          new X509Certificate(bytes).fingerprint256.replaceAll(':','').toLowerCase() !== publicCa.get(file)) throw Error();
+    } catch { console.error('CA pública diferente da origem fixada:', file); failures++; }
+    continue;
+  }
   if (file.endsWith('.wav')) {
     if (!file.startsWith('tv/assets/audio/') || bytes.subarray(0, 4).toString() !== 'RIFF') { console.error('Áudio inesperado:', file); failures++; }
     continue;
