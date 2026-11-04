@@ -8,3 +8,29 @@ body{font-family:"Segoe UI",system-ui,sans-serif;line-height:1.45}button,.reopen
 
 p:empty{display:none}#pcSettings>details{margin:22px 0;padding:18px 0;border-top:1px solid var(--line)}#pcSettings>details>summary{font-size:16px;font-weight:600}
 body.offline #content{display:none}#controllerCapability:empty{display:none}
+/* Primeiro uso na Central (alternativa ao launcher): etapas, controle ilustrado e conclusão. */
+.setup-flow{display:grid;gap:14px}
+.setup-step{display:grid;grid-template-columns:40px minmax(0,1fr);gap:16px;padding:22px;border:1px solid var(--line);border-radius:14px;background:#191a25;animation:setup-in .45s calc(var(--i) * 90ms) cubic-bezier(.2,.8,.2,1) both}
+.step-n{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#2b2839;color:var(--accent);font-weight:700}
+.step-body h2{margin:4px 0 6px}.step-note{margin:0 0 14px}
+.controller-chip{display:inline-flex;align-items:center;gap:9px;padding:6px 14px;border-radius:999px;background:#ffffff0d;color:var(--muted);font-weight:600;margin:4px 0 12px}
+.controller-chip:before{content:'';width:8px;height:8px;border-radius:50%;background:#6c7389;animation:setup-breathe 1.6s ease-in-out infinite}
+.controller-chip.connected{color:#ece8f7;background:#c4bce51f}.controller-chip.connected:before{background:#9be7b5;box-shadow:0 0 10px #9be7b5aa;animation:none}.controller-chip.arrived{animation:setup-pop .55s cubic-bezier(.2,.8,.2,1)}
+.shortcut-card .pad-stage{max-width:420px;margin:4px auto 8px}
+.shortcut-sentence{font-size:17px;color:#e8e6ef;text-align:center;margin:4px 0 2px}.shortcut-sentence strong{color:var(--accent)}
+.shortcut-card .shortcut-value{text-align:center;font-size:13px;font-weight:500;color:var(--muted);margin:0 0 10px}
+.shortcut-card .actions{justify-content:center}.capture-hint{text-align:center;min-height:22px;margin:8px 0}
+.shortcut-card .tune{margin-top:6px}.shortcut-card .tune summary{cursor:pointer;color:var(--muted);font-size:13px;text-align:center}.shortcut-card .tune[open] summary{margin-bottom:10px}
+.mouse-card{display:grid;grid-template-columns:180px minmax(0,1fr);gap:18px;align-items:center;padding:16px 18px;border:1px solid var(--line);border-radius:12px;background:#15161f;margin-top:12px;animation:setup-in .45s cubic-bezier(.2,.8,.2,1) both}
+.mouse-card h3{margin:0 0 4px}.mouse-card p{margin:4px 0}.mouse-card strong{color:var(--accent)}
+.setup-finish{display:flex;align-items:center;gap:16px}.setup-finish .primary{min-width:180px;transition:transform .15s,box-shadow .15s}.setup-finish .primary:hover{transform:translateY(-1px);box-shadow:0 8px 26px #c4bce540}
+.setup-finish .busy{position:relative;color:transparent}.setup-finish .busy:after{content:'';position:absolute;inset:0;margin:auto;width:18px;height:18px;border:2px solid #211e31;border-right-color:transparent;border-radius:50%;animation:setup-spin .7s linear infinite}
+#setupError{color:#ffb8b8;margin:0}
+#initialSetup.leaving{animation:setup-out .3s ease-in forwards}
+.setup-done{text-align:center;padding:42px 0;animation:setup-in .4s cubic-bezier(.2,.8,.2,1)}.setup-done svg{width:96px;height:96px}.setup-done circle{fill:none;stroke:var(--accent);stroke-width:2.5;stroke-dasharray:150;stroke-dashoffset:150;animation:setup-draw .7s ease-out forwards}.setup-done path{fill:none;stroke:#fff;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:40;stroke-dashoffset:40;animation:setup-draw .38s .5s ease-out forwards}.setup-done p{color:#e8e6ef;font-size:17px}.setup-done strong{color:var(--accent)}
+#initialSetup.leaving~.setup-done{position:relative}
+.toggle-line small{display:block;color:var(--muted);font-size:12px}
+@keyframes setup-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}@keyframes setup-out{to{opacity:0;transform:translateY(-6px)}}
+@keyframes setup-pop{40%{transform:scale(1.07)}}@keyframes setup-breathe{50%{opacity:.35}}@keyframes setup-spin{to{transform:rotate(1turn)}}@keyframes setup-draw{to{stroke-dashoffset:0}}
+@media(max-width:760px){.mouse-card{grid-template-columns:1fr}.setup-step{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.setup-step,.mouse-card,.setup-done,#initialSetup.leaving,.controller-chip.arrived{animation:none!important}.setup-done circle,.setup-done path{animation:none;stroke-dashoffset:0}}

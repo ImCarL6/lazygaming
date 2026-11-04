@@ -75,8 +75,8 @@ Start-Process -FilePath cmd.exe -ArgumentList '/c', 'timeout /t 2 >nul & rmdir /
         Where-Object { (Get-ItemProperty -LiteralPath $_ -Name pv -ErrorAction SilentlyContinue).pv -match '^[1-9]' }
     $note = if ($webview) { '' } else { "`n`nAtenção: o Microsoft Edge WebView2 Runtime não foi encontrado. Instale-o em https://developer.microsoft.com/microsoft-edge/webview2/ para o launcher nativo." }
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-    Start-Process -FilePath $exe -ArgumentList '--open-hub' -WorkingDirectory $target
-    Say ("LazyGaming $($release.version) instalado. A Central vai abrir para a configuração inicial; depois use o atalho LazyGaming ou o atalho do controle.$note")
+    Start-Process -FilePath $exe -ArgumentList '--open-launcher' -WorkingDirectory $target
+    Say ("LazyGaming $($release.version) instalado. O LazyGaming vai abrir para a configuração inicial, que pode ser feita pelo controle ou pelo mouse.$note")
 } catch {
     if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
     Say ("Não foi possível instalar: " + $_.Exception.Message) 'Error'; exit 1

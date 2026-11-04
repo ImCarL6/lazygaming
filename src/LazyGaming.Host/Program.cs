@@ -437,7 +437,7 @@ void OpenHub() {
     catch { feedback?.NotifyMessage("Não foi possível abrir a Central do PC."); }
 }
 async Task OpenConfiguredLauncher() {
-    if (!pcPreferences.Current.SetupCompleted) { OpenHub(); return; }
+    // Primeiro uso acontece no próprio launcher (WebView2); sem WebView2 a Central no navegador assume abaixo.
     var dependencies = RuntimeDependencies.Inspect();
     if (!dependencies.WebView2Available) {
         if (dependencyNotices.Accept("webview-unavailable",Environment.TickCount64)) {
@@ -651,7 +651,8 @@ _ = Task.Run(async () =>
         await Task.Delay(750);
     }
 });
-if (!test && (!pcPreferences.Current.SetupCompleted || args.Contains("--hub"))) app.Lifetime.ApplicationStarted.Register(OpenHub);
+if (!test && args.Contains("--hub")) app.Lifetime.ApplicationStarted.Register(OpenHub);
+else if (!test && !pcPreferences.Current.SetupCompleted) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(async () => { try { await OpenConfiguredLauncher(); } catch { OpenHub(); } }); });
 else if (args.Contains("--launcher")) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(async () => { try { await OpenConfiguredLauncher(); } catch { feedback?.NotifyMessage("Não foi possível abrir o launcher. Abra a Central pelo ícone do LazyGaming."); } }); });
 app.Lifetime.ApplicationStopping.Register(desktop.Close);
 app.Lifetime.ApplicationStopped.Register(() => (platform as IDisposable)?.Dispose());

@@ -1,0 +1,38 @@
+/* Ilustrações dos controles (Central e launcher). */
+.pad-art{position:relative}
+.pad-art svg{width:100%;height:auto;display:block;overflow:visible;animation:pad-art-in .42s cubic-bezier(.2,.8,.2,1)}
+.pad-art .body{fill:#232331;stroke:#4d4a66;stroke-width:1.6}
+.pad-art .back{fill:#29283a;stroke:#4d4a66;stroke-width:1}
+.pad-art .cap{fill:#33324a;stroke:#5a5676;stroke-width:1}
+.pad-art .inert .cap{fill:#2c2b40}
+.pad-art .home .cap{fill:#2a2940;stroke:#6b6690}
+.pad-art .dpad path{fill:#33324a;stroke:#5a5676;stroke-width:1}
+.pad-art .stick .cap{fill:#262536}
+.pad-art .stick-top{fill:#3a3954;stroke:#5f5a7c}
+.pad-art .glyph{fill:none;stroke:#bdb7d6;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.pad-art .glyph.letter{fill:#bdb7d6;stroke:none;font:600 12px "Segoe UI",system-ui,sans-serif}
+.pad-art .glyph.letter.small{font-size:11px}
+.pad-art .label{fill:#a9a4c3;font:600 8.5px "Segoe UI",system-ui,sans-serif;letter-spacing:.4px}
+.pad-art .hot .cap,.pad-art .back.hot{fill:#e4defa;stroke:#fff}
+.pad-art .hot .stick-top{fill:#cfc6ee;stroke:#fff}
+.pad-art .hot .glyph{stroke:#2a2540}.pad-art .hot .glyph.letter,.pad-art .hot .label{fill:#2a2540}
+.pad-art .halo{fill:none;stroke:#c8bfe6;stroke-width:2;opacity:.6;filter:drop-shadow(0 0 6px #c8bfe6)}
+.pad-art .ripple,.pad-art .burst{fill:none;stroke:#ece7fd;stroke-width:2;opacity:0}
+.pad-art .hold-ring{fill:none;stroke:#f3f0ff;stroke-width:3;stroke-linecap:round;stroke-dasharray:100;stroke-dashoffset:100;filter:drop-shadow(0 0 5px #c8bfe6)}
+.pad-art .btn,.pad-art .ripple,.pad-art .burst,.pad-art .back,.touch-demo .finger,.touch-demo .finger-glow,.touch-demo .cursor,.touch-demo .tap{transform-box:view-box}
+.pad-art.waiting .body{stroke-dasharray:5 6}
+.pad-art.waiting .hot .cap,.pad-art.waiting .back.hot{fill:#3a3856;stroke:#7c76a0}
+.pad-art.listening .btn:not(.inert) .cap,.pad-art.listening .back{animation:pad-listen 1.3s ease-in-out infinite}
+.pad-art.picked svg{animation:pad-picked .55s cubic-bezier(.2,.8,.2,1)}
+.touch-demo svg{width:100%;max-width:300px;display:block;margin:6px 0}
+.touch-demo .pad-surface{fill:#1e1e2b;stroke:#5a5676;stroke-width:1.2}
+.touch-demo .screen{fill:#141420;stroke:#5a5676;stroke-width:1.2}
+.touch-demo .stand{fill:#33324a}
+.touch-demo .arrow{fill:none;stroke:#8d88a8;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.touch-demo .finger{fill:#e4defa}.touch-demo .finger-glow{fill:#c8bfe6;opacity:.22}
+.touch-demo .cursor{fill:#fff;stroke:#1b1a26;stroke-width:1}
+.touch-demo .tap{fill:none;stroke:#fff;stroke-width:2;opacity:0}
+@keyframes pad-art-in{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes pad-listen{50%{fill:#4a4572;stroke:#9c94c6}}
+@keyframes pad-picked{0%{transform:scale(1)}40%{transform:scale(1.035)}100%{transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){.pad-art svg,.pad-art.picked svg,.pad-art.listening .cap{animation:none!important}}

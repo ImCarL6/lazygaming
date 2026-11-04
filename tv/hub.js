@@ -21,8 +21,8 @@ async function refreshSetup() {
     if (chosen && !info.screens.some(s=>s.available && s.devicePath===chosen)) $('setupDisplay').append(option(chosen,'Tela escolhida indisponível · reconecte ou escolha outra'));
     $('setupDisplay').value = chosen; setupScreenSignature = signature;
   }
-  setupControllerDetected = info.controller.connected;
-  $('setupController').textContent = info.controller.connected ? info.controller.name + ' detectado' : info.controller.name;
+  setupControllerDetected = info.controller.connected; controllerName = info.controller.connected ? info.controller.name : '';
+  chip(info.controller);
   $('setupControllerNote').textContent = info.controller.kind === 'dualsense' && !info.controller.microphone ? info.controller.note : '';
   $('setupControllerChoice').hidden = info.controller.connected;
   if (!setupInitialized) {
@@ -36,24 +36,52 @@ async function refreshSetup() {
   }
   if (!p.controller && !editedBindings.has('setupLauncherShortcut')) showShortcut('setupLauncherShortcut',info.controllerOptions.launcher || info.controllerOptions.launcherBinding);
   if (!p.controller && info.controller.connected) setupMouseOptions = info.controllerOptions;
+  renderSetupMouse();
 }
-let setupMouseOptions;
+let setupMouseOptions, chipState = '';
+function chip(controller) {
+  const state = controller.connected ? 'on:' + controller.name : 'off';
+  if (state === chipState) return;
+  const node = $('setupController'), arrived = chipState && controller.connected; chipState = state;
+  node.textContent = controller.connected ? controller.name + ' conectado' : 'Conecte o controle por USB ou Bluetooth';
+  node.classList.toggle('connected', controller.connected);
+  if (arrived) { node.classList.remove('arrived'); void node.offsetWidth; node.classList.add('arrived'); }
+  for (const prefix of bindings.keys()) updateShortcut(prefix);
+}
 const padButtons = [[64,'Select / View / Create / −'],[128,'Start / Menu / Options / +'],[256,'Clique do analógico esquerdo'],[512,'Clique do analógico direito'],[16,'Superior esquerdo · LB / L1 / L'],[32,'Superior direito · RB / R1 / R'],[1024,'Gatilho esquerdo'],[2048,'Gatilho direito'],[1,'Botão inferior · A / X / B'],[2,'Botão da direita · B / círculo / A'],[4,'Botão da esquerda · X / quadrado / Y'],[8,'Botão superior · Y / triângulo / X'],[4096,'Microfone · DualSense'],[8192,'Touchpad · DualSense']];
 function option(value, text) { const node = el('option', '', text); node.value = value; return node; }
 function buttonSelect(id, multiple = false) { const node = el('select'); node.id = id; node.multiple = multiple; if (multiple) node.size = 4; node.append(...padButtons.map(([v,t]) => option(v,t))); return node; }
-function shortcutField(prefix, title) {
-  const group = el('fieldset'), legend = el('legend','',title); group.append(legend);
+function shortcutField(prefix, title, purpose) {
+  const group = el('fieldset','shortcut-card'), legend = el('legend','',title); group.append(legend); group.dataset.purpose = purpose;
+  const art = el('div','pad-stage'); art.id = prefix + 'Art'; group.append(art);
+  const sentence = el('p','shortcut-sentence'); sentence.id = prefix + 'Sentence'; group.append(sentence);
   const current = el('p','shortcut-value'); current.id = prefix + 'Value'; group.append(current);
-  const actions = el('div','actions'), record = button('Escolher botão', () => beginCapture(prefix)); record.id=prefix+'Record';actions.append(record); group.append(actions);
-  const hint = el('p','muted'); hint.id = prefix + 'Hint'; hint.setAttribute('role','status'); group.append(hint);
-  const gesture = el('label','','Gesto'), select = el('select'); select.id = prefix + 'Gesture'; select.append(option('hold','Segurar'),option('double-tap','Duplo toque')); gesture.append(select); group.append(gesture);
-  const hold = el('label','','Tempo ao segurar'), time = el('select'); hold.id = prefix + 'HoldLabel'; time.id = prefix + 'Hold'; for (const ms of [500,1000,1500,2000,3000]) time.append(option(ms,(ms/1000) + ' s')); hold.append(time); group.append(hold);
+  const actions = el('div','actions'), record = button('Mudar botão', () => beginCapture(prefix)); record.id=prefix+'Record';record.classList.add('change-button');actions.append(record); group.append(actions);
+  const hint = el('p','capture-hint'); hint.id = prefix + 'Hint'; hint.setAttribute('role','status'); group.append(hint);
+  const tune = el('details','tune'), summary = el('summary','','Ajustar gesto'); tune.append(summary);
+  const gesture = el('label','','Gesto'), select = el('select'); select.id = prefix + 'Gesture'; select.append(option('hold','Segurar'),option('double-tap','Duplo toque')); gesture.append(select); tune.append(gesture);
+  const hold = el('label','','Tempo ao segurar'), time = el('select'); hold.id = prefix + 'HoldLabel'; time.id = prefix + 'Hold'; for (const ms of [500,1000,1500,2000,3000]) time.append(option(ms,(ms/1000).toLocaleString('pt-BR') + ' s')); hold.append(time); tune.append(hold);
+  group.append(tune);
   select.onchange = () => { editedBindings.add(prefix); if(bindings.has(prefix))bindings.get(prefix).gesture=select.value; updateShortcut(prefix); };
   time.onchange = () => { editedBindings.add(prefix); if(bindings.has(prefix))bindings.get(prefix).holdMs=Number(time.value); updateShortcut(prefix); };
   return group;
 }
-$('shortcutFields').append(shortcutField('launcherShortcut','Abrir / ocultar launcher'),shortcutField('mouseShortcut','Ativar / desativar mouse'));
-$('setupLauncherFields').append(shortcutField('setupLauncherShortcut','Abrir e ocultar o launcher'));
+// Família do desenho: controle detectado; senão, a escolha manual; senão, silhueta aguardando.
+function artFamily() {
+  if (controllerKind) return LGControllerArt.family(controllerKind, controllerName);
+  const choice = setupPending ? $('setupControllerSource').value : $('controllerSource').value;
+  return choice === 'auto' ? 'generic' : LGControllerArt.family(choice);
+}
+function gestureText(binding) {
+  const names = buttonNames(binding.buttons) || 'o botão escolhido', seconds = (binding.holdMs/1000).toLocaleString('pt-BR');
+  return binding.gesture === 'double-tap' ? ['Toque duas vezes em ', names] : ['Segure ', names, ' por ' + seconds + ' s'];
+}
+function sentenceInto(node, binding, purpose) {
+  const parts = gestureText(binding), action = purpose === 'mouse' ? ' para ligar ou desligar o mouse.' : ' para abrir ou ocultar o launcher.';
+  node.replaceChildren(parts[0], el('strong','',parts[1]), parts[2] || '', action);
+}
+$('shortcutFields').append(shortcutField('launcherShortcut','Abrir / ocultar launcher','launcher'),shortcutField('mouseShortcut','Ativar / desativar mouse','mouse'));
+$('setupLauncherFields').append(shortcutField('setupLauncherShortcut','Abrir e ocultar o launcher','launcher'));
 for (const id of ['leftClick','rightClick']) $(id).append(...padButtons.map(([v,t]) => option(v,t)));
 function shortcutValue(prefix) { return { ...bindings.get(prefix), gesture: $(prefix+'Gesture').value, holdMs: Number($(prefix+'Hold').value) }; }
 function buttonNames(value) {
@@ -64,29 +92,45 @@ function updateShortcut(prefix) {
   const binding = bindings.get(prefix); if(!binding)return;
   $(prefix+'HoldLabel').hidden = $(prefix+'Gesture').value !== 'hold';
   const name=controllerName || (controllerKind==='dualsense'?'DualSense':controllerKind==='switch-pro'?'Nintendo':controllerKind==='xinput'?'Xbox / 8BitDo':'');
-  $(prefix+'Value').textContent = (name?name+' · ':'') + buttonNames(binding.buttons) + ' · ' + ($(prefix+'Gesture').value === 'double-tap' ? 'duplo toque' : 'segurar ' + Number($(prefix+'Hold').value)/1000 + ' s');
+  const current = { ...binding, gesture: $(prefix+'Gesture').value, holdMs: Number($(prefix+'Hold').value) };
+  $(prefix+'Value').textContent = name ? name + ' · ' + buttonNames(binding.buttons) : '';
+  const family = artFamily(), card = $(prefix+'Art').closest('fieldset');
+  sentenceInto($(prefix+'Sentence'), current, card.dataset.purpose);
+  LGControllerArt.render($(prefix+'Art'), { family, buttons: current.buttons, gesture: current.gesture, holdMs: current.holdMs, waiting: family === 'generic', listening: capturePrefix === prefix });
+  if (prefix === 'setupLauncherShortcut') renderSetupMouse();
+}
+// Cartão somente leitura do mouse no primeiro uso (padrão do controle detectado).
+function renderSetupMouse() {
+  const options = setupMouseOptions, binding = options && (options.mouse || options.mouseBinding), family = artFamily();
+  $('setupMouseCard').hidden = !binding || family === 'generic';
+  if ($('setupMouseCard').hidden) return;
+  sentenceInto($('setupMouseSentence'), binding, 'mouse');
+  LGControllerArt.render($('setupMouseArt'), { family, buttons: binding.buttons, gesture: binding.gesture, holdMs: binding.holdMs });
+  const dualsense = family === 'dualsense';
+  $('setupTouchDemo').hidden = !dualsense; if (dualsense) LGControllerArt.touchpadDemo($('setupTouchDemo'));
+  $('setupMouseMoves').textContent = dualsense ? 'Deslize no touchpad para mover · pressione para clicar · pressione e deslize para arrastar.' : 'O analógico direito move o cursor; ' + buttonNames(options.rightClick ?? 32) + ' clica e ' + buttonNames(options.leftClick ?? 16) + ' faz o clique direito.';
 }
 function showShortcut(prefix, binding) { bindings.set(prefix,{...binding}); $(prefix+'Gesture').value = binding.gesture; $(prefix+'Hold').value = binding.holdMs; updateShortcut(prefix); }
 async function beginCapture(prefix) {
   if(capturePrefix === prefix) { await api('/api/hub/controller-capture/cancel',{}); $(prefix+'Hint').textContent='';endCapture();return; }
   if(capturePrefix) await api('/api/hub/controller-capture/cancel',{});
-  endCapture(); await api('/api/hub/controller-capture',{}); capturePrefix = prefix; $(prefix+'Record').textContent='Cancelar gravação';
+  endCapture(); await api('/api/hub/controller-capture',{}); capturePrefix = prefix; $(prefix+'Record').textContent='Cancelar'; updateShortcut(prefix);
   document.querySelectorAll('#initialSetup button[type=submit],#pcSettings button[type=submit]').forEach(n=>n.disabled=true);
   async function poll() {
     try {
       const state = await api('/api/hub/controller-capture');
       if(capturePrefix !== prefix)return;
-      if(state.phase === 'done') { const previous=shortcutValue(prefix);showShortcut(prefix,state.singlePress ? {...previous,buttons:state.binding.buttons} : state.binding); editedBindings.add(prefix); $(prefix+'Hint').textContent = 'Botão escolhido: '+buttonNames(state.binding.buttons); endCapture(); return; }
-      if(state.phase === 'timeout' || state.phase === 'idle') { $(prefix+'Hint').textContent='Não reconhecemos um atalho. Tente novamente.'; endCapture(); return; }
-      $(prefix+'Hint').textContent = state.phase === 'release' ? 'Solte os botões do controle' : 'Aperte o botão que deseja usar';
+      if(state.phase === 'done') { const previous=shortcutValue(prefix);showShortcut(prefix,state.singlePress ? {...previous,buttons:state.binding.buttons} : state.binding); editedBindings.add(prefix); endCapture(); $(prefix+'Hint').textContent = 'Pronto! ' + buttonNames(state.binding.buttons) + ' escolhido.'; updateShortcut(prefix); $(prefix+'Art').classList.remove('picked'); void $(prefix+'Art').offsetWidth; $(prefix+'Art').classList.add('picked'); return; }
+      if(state.phase === 'timeout' || state.phase === 'idle') { endCapture(); $(prefix+'Hint').textContent='Não percebemos nenhum botão. Tente de novo quando quiser.'; updateShortcut(prefix); return; }
+      $(prefix+'Hint').textContent = state.phase === 'release' ? 'Solte os botões do controle…' : 'Aperte no controle o botão que você quer usar';
       captureTimer=setTimeout(poll,120);
-    } catch(error) { $(prefix+'Hint').textContent=error.message;endCapture(); }
+    } catch(error) { endCapture(); $(prefix+'Hint').textContent=error.message; }
   }
   await poll();
 }
 function endCapture() {
   clearTimeout(captureTimer);capturePrefix=null;
-  for(const prefix of ['setupLauncherShortcut','launcherShortcut','mouseShortcut'])$(prefix+'Record').textContent='Escolher botão';
+  for(const prefix of ['setupLauncherShortcut','launcherShortcut','mouseShortcut']){$(prefix+'Record').textContent='Mudar botão';if(bindings.has(prefix))updateShortcut(prefix);}
   document.querySelectorAll('#initialSetup button[type=submit],#pcSettings button[type=submit]').forEach(n=>n.disabled=false);
 }
 function pointerLabels() { $('mouseSpeedValue').textContent = $('mouseSpeed').value; $('mouseDeadzoneValue').textContent = $('mouseDeadzone').value + '%'; $('mouseCurveValue').textContent = $('mouseCurve').value; }
@@ -118,7 +162,7 @@ function controllerStatus(info) {
   $('detectedController').textContent=text;
   $('controllerCapability').textContent=c.kind==='dualsense' && !c.microphone ? c.note : '';
   $('legacyMicLabel').hidden=c.kind!=='dualsense' && $('controllerSource').value!=='dualsense';$('bluetoothFeaturesLabel').hidden=$('legacyMicLabel').hidden;
-  $('setupController').textContent=text;
+  chip(c);
   if(setupPending){setupControllerDetected=c.connected;$('setupControllerChoice').hidden=c.connected;}
   if(!swapEdited && !controllerSourceChanged)$('swapButtons').checked=info.controllerOptions.swapConfirmBack;
   for(const prefix of bindings.keys())updateShortcut(prefix);
@@ -269,13 +313,30 @@ async function start() {
   } catch (error) { if(!offline){$('locked').hidden = false; $('content').hidden = true; $('connection').textContent = 'Aguardando acesso'; notice(error.message, true);} }
 }
 $('retry').onclick = start;
-$('initialSetup').onsubmit = event => { event.preventDefault(); run(async () => {
+let finishing = false;
+$('setupControllerSource').addEventListener('change', () => { for (const prefix of bindings.keys()) updateShortcut(prefix); renderSetupMouse(); });
+$('initialSetup').onsubmit = event => {
+  event.preventDefault(); if (finishing) return;
   $('setupError').textContent = '';
-  try {
-    await api('/api/hub/setup', { displayPath: $('setupDisplay').value, controllerSource: setupControllerDetected ? 'auto' : $('setupControllerSource').value, audioDeviceId: $('setupAudio').value || null, onlyGameDisplay: $('setupOnlyDisplay').checked, controller: { ...setupMouseOptions,launcher:shortcutValue('setupLauncherShortcut') } });
-    setupReview=false; await refreshSetup(); await reload(); document.querySelector('[data-view="library"]').click(); notice('Configuração salva.');
-  } catch (error) { $('setupError').textContent = error.message; throw error; }
-}); };
+  if (!$('setupDisplay').value) { $('setupError').textContent = 'Escolha a tela em que você vai jogar.'; $('setupDisplay').focus(); return; }
+  if (capturePrefix) { $('setupError').textContent = 'Conclua ou cancele a escolha do botão.'; return; }
+  finishing = true; const submit = $('setupSubmit'); submit.disabled = true; submit.classList.add('busy'); submit.firstChild.textContent = 'Salvando…';
+  run(async () => {
+    try {
+      const launcher = shortcutValue('setupLauncherShortcut');
+      await api('/api/hub/setup', { displayPath: $('setupDisplay').value, controllerSource: setupControllerDetected ? 'auto' : $('setupControllerSource').value, audioDeviceId: $('setupAudio').value || null, onlyGameDisplay: $('setupOnlyDisplay').checked, controller: { ...setupMouseOptions,launcher } });
+      const done = $('setupDone'); sentenceInto($('setupDoneText'), launcher, 'launcher');
+      $('initialSetup').classList.add('leaving'); setTimeout(() => { if (finishing) { $('initialSetup').hidden = true; done.hidden = false; } }, 280);
+      await new Promise(resolve => setTimeout(resolve, matchMedia('(prefers-reduced-motion: reduce)').matches ? 300 : 1700));
+      setupReview = false;
+      // A configuração já foi salva: falhas ao atualizar a tela não a desfazem.
+      try { await refreshSetup(); await reload(); } catch (_) { }
+      done.hidden = true; $('initialSetup').hidden = false; $('initialSetup').classList.remove('leaving');
+      document.querySelector('[data-view="library"]').click(); notice('Tudo pronto. Bons jogos!');
+    } catch (error) { $('setupError').textContent = error.message; throw error; }
+    finally { finishing = false; submit.disabled = false; submit.classList.remove('busy'); submit.firstChild.textContent = 'Concluir'; }
+  });
+};
 $('samsungLearn').onclick = () => { document.querySelector('[data-view="system"]').click(); setTimeout(() => $('tvIntegration').scrollIntoView({behavior:'smooth',block:'center'}),100); };
 $('samsungDismiss').onclick = () => run(async () => { await api('/api/hub/samsung-hint/dismiss',{}); $('samsungHint').hidden = true; });
 $('tvCode').onclick = () => run(async () => {
@@ -290,5 +351,5 @@ $('quitHelper').onclick = () => run(async () => {
 $('reviewSetup').onclick = () => run(async () => { setupReview=true;setupInitialized=false;await refreshSetup(); });
 start();
 setInterval(() => { if (!offline && !working && snapshot && !$('gameDialog').open && document.visibilityState === 'visible') reload().catch(error => { if(!offline)notice(error.message, true); }); }, 15000);
-setInterval(() => { if (!offline && setupPending && !working && document.visibilityState === 'visible') refreshSetup().catch(error => { if(!offline)$('setupError').textContent = error.message; }); },2000);
+setInterval(() => { if (!offline && setupPending && !working && !finishing && document.visibilityState === 'visible') refreshSetup().catch(error => { if(!offline)$('setupError').textContent = error.message; }); },2000);
 setInterval(refreshController,750);

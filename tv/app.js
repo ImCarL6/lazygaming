@@ -143,7 +143,7 @@ async function api(path, payload) {
   if (!desktop && Date.now() - proofAt > 15000) { await proof(base); proofAt = Date.now(); }
   var method = payload === undefined ? 'GET' : 'POST', body = payload === undefined ? '' : JSON.stringify(payload);
   var time = Date.now().toString(), nonce = LGCrypto.nonce();
-  if (desktop) return request(base + path, { method: method, headers: { 'Content-Type': 'application/json' }, body: body || undefined }, /launcher\/(sync|input)/.test(path) ? 25000 : /api\/displays$/.test(path) ? 15000 : /start$/.test(path) ? 30000 : 5000);
+  if (desktop) return request(base + path, { method: method, headers: { 'Content-Type': 'application/json' }, body: body || undefined }, /launcher\/(sync|input)/.test(path) ? 25000 : /api\/(displays|hub\/setup)$/.test(path) ? 15000 : /start$/.test(path) ? 30000 : 5000);
   return request(base + path, { method: method, headers: { 'Content-Type': 'application/json', 'X-LG-Time': time, 'X-LG-Nonce': nonce,
     'X-LG-Signature': LGCrypto.hmac(session.key, method + '\n' + path + '\n' + time + '\n' + nonce + '\n' + body) }, body: body || undefined }, /launcher\/(sync|input)/.test(path) ? 25000 : /api\/displays$/.test(path) ? 15000 : /\/(start|move-to-tv)$/.test(path) ? 30000 : 5000);
 }
@@ -674,7 +674,7 @@ function handleRemoteNavigation(event) {
   if (handleVolumeKey(event)) return;
   var domFocus = document.activeElement;
   var active = (event.controller || !domFocus || domFocus.tagName === 'BODY') && controllerFocus && controllerFocus.isConnected ? controllerFocus : domFocus;
-  var scope = $('transport') && !$('transport').hidden ? $('transport') : !$('modal').hidden ? $('modal') : !$('setup').hidden ? $('setup') : $('gameOptions') && !$('gameOptions').hidden ? $('gameOptions') : !$('options').hidden ? $('options') : document;
+  var scope = $('firstRun') && !$('firstRun').hidden ? $('firstRun') : $('transport') && !$('transport').hidden ? $('transport') : !$('modal').hidden ? $('modal') : !$('setup').hidden ? $('setup') : $('gameOptions') && !$('gameOptions').hidden ? $('gameOptions') : !$('options').hidden ? $('options') : document;
   if ([13, 37, 38, 39, 40].indexOf(event.keyCode) !== -1 && scope !== document && scope.contains && (!active || !scope.contains(active))) {
     event.preventDefault();
     var first = Array.from(scope.querySelectorAll('button:not(:disabled),input')).filter(function (e) { return e.offsetParent !== null; })[0];
@@ -692,6 +692,7 @@ function handleRemoteNavigation(event) {
   if (event.keyCode === 10009 || event.key === 'Escape') {
     event.preventDefault();
     if (event.repeat) return;
+    if ($('firstRun') && !$('firstRun').hidden) { if (window.LGFirstRun) window.LGFirstRun.back(); return; }
     if ($('transport') && !$('transport').hidden) $('cancelTransport').click();
     else if (!$('modal').hidden) $('cancel').click();
     else if (!$('setup').hidden) {
@@ -944,7 +945,13 @@ async function initialize() {
       var back = button('Ocultar launcher', function () { return api('/api/launcher/hide', {}); }); back.id = 'returnGame'; $('dockActions').appendChild(back);
     } catch (_) { desktop = false; localStorage.removeItem('desktop-client'); }
   }
-  if (session) run(async function () { if (desktop) { await refresh(); focusSelectedGame(); } else await connect(); });
+  if (session && desktop) (async function () {
+    // Primeiro uso no próprio launcher; a biblioteca carrega depois (ou direto, se já configurado).
+    if (document.readyState === 'loading') await new Promise(function (resolve) { document.addEventListener('DOMContentLoaded', resolve, { once: true }); });
+    if (window.LGFirstRun) { try { await window.LGFirstRun.start(); } catch (_) { $('firstRun').hidden = true; } }
+    run(async function () { await refresh(); focusSelectedGame(); });
+  })();
+  else if (session) run(connect);
   else focusControl(local ? $('newCode') : $('find'));
   syncLauncher();
 }

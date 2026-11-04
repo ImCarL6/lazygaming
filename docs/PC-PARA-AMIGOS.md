@@ -7,7 +7,7 @@ Launcher local para jogar pelo controle, com um monitor ou várias telas. A “T
 1. Baixe `LazyGaming-Setup-<versão>.exe` (e, se quiser conferir, o `.sha256` ao lado).
 2. Execute. O Windows pode mostrar “O Windows protegeu o computador”, porque o instalador não tem assinatura digital: clique em **Mais informações → Executar assim mesmo** somente se recebeu o arquivo de quem confia.
 3. A instalação é só para o seu usuário, sem administrador: programa em `%LOCALAPPDATA%\Programs\LazyGaming`, atalhos **LazyGaming** (área de trabalho e menu Iniciar) e **Central do LazyGaming**. Cada arquivo é conferido por SHA-256 antes de instalar.
-4. Ao terminar, a Central abre para a configuração inicial.
+4. Ao terminar, o LazyGaming abre em tela cheia para a configuração inicial em três passos (tela, controle, som), pelo controle ou pelo mouse. O desenho do seu controle mostra qual botão abre o launcher e como ligar o mouse; **Mudar botão** troca o atalho. Sem WebView2, a mesma configuração abre na Central do navegador.
 
 Atualizar: saia do LazyGaming pelo ícone da área de notificação e execute o instalador novo; configurações, biblioteca e artes (`%LOCALAPPDATA%\LazyGaming`) são preservadas e a versão anterior fica em `LazyGaming.anterior`. Desinstalar: **Configurações → Aplicativos → LazyGaming** (os dados ficam). Requer Windows 10/11 64 bits e Microsoft Edge WebView2 Runtime (já presente na maioria dos Windows 11).
 
