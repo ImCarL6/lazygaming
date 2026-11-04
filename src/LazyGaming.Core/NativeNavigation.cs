@@ -6,7 +6,9 @@ public sealed class NativeNavigation
     static readonly (ControllerButtons Button, int Key)[] mapping = [
         (ControllerButtons.Left, 37), (ControllerButtons.Right, 39),
         (ControllerButtons.Up, 38), (ControllerButtons.Down, 40),
-        (ControllerButtons.Confirm, 13), (ControllerButtons.Back, 10009)];
+        (ControllerButtons.Confirm, 13), (ControllerButtons.Back, 10009), (ControllerButtons.Volume, VolumeKey)];
+    // Botão superior (△/Y/X Nintendo): abre/fecha o volume rápido do launcher. Código fora da faixa de teclas reais.
+    public const int VolumeKey = 1001;
     readonly Dictionary<int, long> held = new();
     public HashSet<int> Repeated { get; } = new();
     public List<int> Update(ReadOnlySpan<byte> report, long now, bool active) =>

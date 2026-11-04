@@ -20,7 +20,7 @@ public sealed class HubSession
     public bool Authenticate(string supplied) => Security.Equal(cookie, supplied);
 }
 
-public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enrich)
+public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enrich, Func<bool>? enabled = null)
 {
     readonly SemaphoreSlim scan = new(1, 1);
     public bool Busy { get; private set; }
@@ -37,6 +37,7 @@ public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enr
     }
     async Task EnrichSafely() { try { await enrich(); } catch { } }
     public async Task AutomaticTick(DateTime now) {
+        if (enabled?.Invoke() == false) { NextScan = null; return; }
         var preferences = library.Settings.Read();
         if (!preferences.Automatic) { NextScan = null; return; }
         NextScan ??= now.AddMinutes(preferences.IntervalMinutes);

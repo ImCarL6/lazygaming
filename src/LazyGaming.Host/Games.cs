@@ -166,26 +166,16 @@ public sealed class WindowsGames(GameLibrary library, string directory) : IGameP
         if (game.Id == "steam-632360") {
             if (!File.Exists(Path.Combine(Path.GetDirectoryName(game.ProcessPath)!, "UnityPlayer.dll")))
                 throw new InvalidOperationException("A instalação Unity do Risk of Rain 2 não foi identificada.");
-            var display = Displays.GameDisplay();
-            var screens = System.Windows.Forms.Screen.AllScreens;
-            int monitor = Array.FindIndex(screens, s => string.Equals(s.DeviceName, display, StringComparison.OrdinalIgnoreCase)) + 1;
-            // Screen.AllScreens pode estar em cache após habilitar a TV. O índice
-            // é apenas indicação inicial: o posicionamento físico é conferido depois.
-            if (monitor == 0) monitor = 1;
-            var bounds = Displays.TvBounds();
+            var target = LaunchDisplay.Current();var bounds=target.Bounds;
             var launch = new ProcessStartInfo(Path.Combine(library.SteamPath, "steam.exe")) { UseShellExecute = false };
-            foreach (var argument in GameDisplaySettings.RiskLaunchArguments(monitor, bounds.Width, bounds.Height)) launch.ArgumentList.Add(argument);
+            foreach (var argument in GameDisplaySettings.RiskLaunchArguments(target.Monitor, bounds.Width, bounds.Height)) launch.ArgumentList.Add(argument);
             Process.Start(launch);
             return;
         }
         var info = game.Steam ? SteamLaunchInfo(game, library.SteamPath) : LaunchInfo(game);
         if (GameDisplaySettings.CanUseUnityDisplayArguments(game)) {
-            var display = Displays.GameDisplay();
-            var screens = System.Windows.Forms.Screen.AllScreens;
-            int monitor = Array.FindIndex(screens, s => string.Equals(s.DeviceName, display, StringComparison.OrdinalIgnoreCase)) + 1;
-            if (monitor < 1) throw new InvalidOperationException("O destino Unity da TV não foi identificado.");
-            var bounds = Displays.TvBounds();
-            foreach (var argument in GameDisplaySettings.UnityDisplayArguments(monitor, bounds.Width, bounds.Height)) info.ArgumentList.Add(argument);
+            var target = LaunchDisplay.Current();var bounds=target.Bounds;
+            foreach (var argument in GameDisplaySettings.UnityDisplayArguments(target.Monitor, bounds.Width, bounds.Height)) info.ArgumentList.Add(argument);
         }
         using var launched = Process.Start(info);
     }
@@ -359,17 +349,17 @@ public sealed class GameService(GameLibrary library, IGamePlatform platform, IGa
         }
         finally { gate.Release(); }
     }
-    public async Task Tick()
+    public async Task Tick(bool maintainPresentation = true)
     {
         await gate.WaitAsync();
         try
         {
             var processes = platform.Processes();
             ExpireOpening(processes);
-            platform.PlaceWindows(processes);
+            if (maintainPresentation) platform.PlaceWindows(processes);
             bool running = catalog.Any(g => processes.Any(p => LaunchChoices.Matches(g, p)));
             if (starting != null && processes.Any(p => LaunchChoices.Matches(catalog.Single(g => g.Id == starting), p))) starting = null;
-            environment.Tick();
+            if (maintainPresentation) environment.Tick();
             if (DateTime.UtcNow < switchUntil) { idleSince = null; return; }
             if (running || starting != null) { idleSince = null; return; }
             foreach (var game in catalog) platform.CancelTarget(game);

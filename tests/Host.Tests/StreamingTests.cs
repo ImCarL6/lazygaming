@@ -40,6 +40,11 @@ static class StreamingTests
         Check(SunshineHost.CaptureSource(true, () => inactive, _ => throw new Exception("não ler modo de fonte inativa")) == null, "Stream prepara vínculo antes da ativação sem confundir EDID com modo capturado");
         Check(SunshineHost.CaptureSource(true, () => inactive with { Active = true }, tv => { Check(tv, "captura da TV identificada"); return new() { Width = 3840, Height = 2160 }; })?.Width == 3840, "após preparar sessão, Stream lê resolução ativa real");
         var launchArguments = GameDisplaySettings.RiskLaunchArguments(7, 3840, 2160);
+        var qhd=LaunchDisplay.Resolve("odyssey",[new("physical-qhd","odyssey",new(0,0,2560,1440)),new("physical-tv","tv",new(2560,0,3840,2160))],["odyssey","tv"]);
+        Check(qhd.Monitor==1 && qhd.Bounds.Width==2560 && GameDisplaySettings.RiskLaunchArguments(qhd.Monitor,qhd.Bounds.Width,qhd.Bounds.Height).Contains("1440"),"launch uses current QHD target independently of other 4K display");
+        Check(LaunchDisplay.Resolve("odyssey",[new("qhd","odyssey",new(0,0,2560,1440))],["tv","odyssey"]).Monitor==2,"fresh monitor order follows topology changes");
+        bool missingMonitor=false;try{LaunchDisplay.Resolve("odyssey",[new("qhd","odyssey",new(0,0,2560,1440))],["tv"]);}catch(InvalidOperationException){missingMonitor=true;}
+        Check(missingMonitor,"never silently launch on monitor one when target index is missing");
         Check(launchArguments.SequenceEqual(new[] { "-applaunch", "632360", "-monitor", "7", "-screen-fullscreen", "0", "-popupwindow", "-screen-width", "3840", "-screen-height", "2160" }), "Risk usa Steam com destino dinâmico e janela sem borda, sem mudar o principal");
         var now = DateTime.UtcNow;
         var focusTarget = new GameWindowTarget("focus-game.exe", now.AddSeconds(90));

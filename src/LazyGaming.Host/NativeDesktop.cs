@@ -14,6 +14,9 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
     readonly TaskCompletionSource<nint> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     GlassWindow? form;
     Action? focusContent;
+    Action? announceShown;
+    // Fechar toca no host: a página oculta pode ter tarefas adiadas pelo navegador.
+    readonly System.Media.SoundPlayer? closeSound = LoadSound("launcher-close.wav");
     volatile bool live;
     object dimensions = new { };
     object scale = new { };
@@ -27,6 +30,8 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 using var surface = new GameSurface();
                 using var web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
                 focusContent = () => { if (WindowFocus.IsForeground(window.Handle)) web.Focus(); };
+                // A página toca o som no primeiro quadro desenhado depois de visível (requestAnimationFrame).
+                announceShown = () => { try { web.CoreWebView2?.PostWebMessageAsJson("{\"type\":\"launcher-shown\"}"); } catch (InvalidOperationException) { } };
                 window.Controls.Add(web); window.Owner = surface;
                 window.Activated += (_, _) => web.Focus();
                 using var timer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -97,17 +102,26 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
                 });
                 Application.Run();
             } catch (Exception e) { ready.TrySetException(e); }
-            finally { live = false; focusContent = null; form = null; }
+            finally { live = false; focusContent = null; announceShown = null; form = null; }
         }) { IsBackground = true, Name = "LazyGaming desktop" };
         ui.SetApartmentState(ApartmentState.STA); ui.Start();
         return ready.Task.WaitAsync(TimeSpan.FromSeconds(20));
     }
     public static bool SameOrigin(string supplied, Uri expected) => Uri.TryCreate(supplied, UriKind.Absolute, out var uri) &&
         uri.Scheme == expected.Scheme && uri.Host == expected.Host && uri.Port == expected.Port && uri.UserInfo.Length == 0;
-    public Task Show(Rectangle? bounds = null) => Dispatch(() => { if (bounds.HasValue) form!.Bounds = bounds.Value; form!.WindowState = FormWindowState.Normal; form.Show(); form.BringToFront(); focusContent?.Invoke(); });
+    public Task Show(Rectangle? bounds = null) => Dispatch(() => { if (bounds.HasValue) form!.Bounds = bounds.Value; form!.WindowState = FormWindowState.Normal; bool hidden = !form.Visible; form.Show(); form.BringToFront(); focusContent?.Invoke(); if (hidden) announceShown?.Invoke(); });
     public Task FocusInput() => Dispatch(() => focusContent?.Invoke());
     public Task Align(Rectangle bounds) => Dispatch(() => { form!.WindowState = FormWindowState.Normal; form.Bounds = bounds; });
-    public Task Hide() => Dispatch(() => form!.Hide());
+    public Task Hide() => Dispatch(() => {
+        bool visible = form!.Visible; form.Hide();
+        // Nunca antes de sumir: aguarda a composição DWM que já não contém a janela.
+        if (visible && closeSound != null) _ = Task.Run(() => { try { DwmFlush(); closeSound.Play(); } catch { } });
+    });
+    static System.Media.SoundPlayer? LoadSound(string name) {
+        try { var player = new System.Media.SoundPlayer(Path.Combine(AppContext.BaseDirectory, "wwwroot", "assets", "audio", name)); player.Load(); return player; }
+        catch (Exception e) when (e is IOException or InvalidOperationException or UnauthorizedAccessException) { return null; }
+    }
+    [DllImport("dwmapi.dll")] static extern int DwmFlush();
     Task Dispatch(Action action) {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var window = form;
@@ -116,7 +130,7 @@ public sealed class NativeDesktop(string directory, Uri origin, Func<nint> gameW
         catch (InvalidOperationException e) { done.TrySetException(e); }
         return done.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
-    public void Dispose() { var window = form; try { if (window is { IsDisposed: false }) window.BeginInvoke(window.Close); } catch (InvalidOperationException) { } }
+    public void Dispose() { closeSound?.Dispose(); var window = form; try { if (window is { IsDisposed: false }) window.BeginInvoke(window.Close); } catch (InvalidOperationException) { } }
 
     sealed class GlassWindow : Form {
         public GlassWindow() { Text = "LazyGaming — PC"; FormBorderStyle = FormBorderStyle.None; BackColor = Color.Black; StartPosition = FormStartPosition.Manual; TopMost = true; AutoScaleMode = AutoScaleMode.None; }

@@ -187,8 +187,9 @@ async function play(game) {
   if (mode === 'stream' && window.LGStream) await window.LGStream.prepare();
   var state = await api('/api/status'), other = state.state.games.find(function (g) { return g.id !== game.id && (g.running || g.starting); });
   if (other) {
-    if (state.state.environment && state.state.environment.mode && state.state.environment.mode !== mode) throw Error('Mantenha o mesmo modo Cabo/Stream para trocar de jogo nesta sessão.');
-    if (!await ask('Trocar jogo?', 'Encerrar ' + other.name + ' antes de abrir ' + game.name + '?', 'Trocar')) return;
+    if (state.state.environment && state.state.environment.mode && state.state.environment.mode !== mode) throw Error(desktop ? 'Há uma transmissão ativa para a TV. Troque o jogo pelo app da TV.' : 'Mantenha o mesmo modo Cabo/Stream para trocar de jogo nesta sessão.');
+    // No PC a confirmação de troca já aconteceu no diálogo de início.
+    if (!desktop && !await ask('Trocar jogo?', 'Encerrar ' + other.name + ' antes de abrir ' + game.name + '?', 'Trocar')) return;
     if (!await stop(other, game.id, mode)) return;
   }
   message(mode === 'stream' ? 'Abrindo o jogo para transmissão…' : 'Preparando a TV e abrindo o jogo…');
@@ -209,6 +210,12 @@ async function showStream() {
 async function choosePresentation(game, onChoice) {
   var previous = controllerFocus || document.activeElement, ticket = ++transportTicket, navigationAt = lastNavigationAt;
   var cable = null, stream = null;
+  // Launcher do PC: sem Cabo/Stream neste teste; só confirma início ou troca (docs/STREAM-RETOMAR.md).
+  var simple = desktop, replacing = simple && libraryGames.find(function (g) { return game && g.id !== game.id && (g.running || g.starting); });
+  $('transportTitle').textContent = simple ? (replacing ? 'Trocar jogo?' : 'Iniciar jogo?') : 'Como jogar?';
+  $('chooseCable').textContent = simple ? (replacing ? 'Trocar' : 'Jogar') : 'Cabo';
+  $('chooseStream').hidden = simple;
+  var question = !simple ? '' : replacing ? 'Encerrar ' + replacing.name + ' e abrir ' + game.name + '?' : 'Abrir ' + game.name + '?';
   var choices = game && game.choices || [], selected = game && game.selectedChoice;
   if (!choices.some(function (v) { return v.id === selected && v.available; })) selected = (choices.find(function (v) { return v.available; }) || {}).id;
   var choicePanel = $('launchChoices'), choiceButtons = $('launchChoiceButtons');
@@ -236,10 +243,12 @@ async function choosePresentation(game, onChoice) {
     }
     function render() {
       if (ticket !== transportTicket) return;
-      $('chooseCable').hidden = !!cable && cable.available === false;
+      $('chooseCable').hidden = !simple && !!cable && cable.available === false;
       $('chooseCable').disabled = !cable || cable.available !== true || (choices.length > 0 && !selected);
       $('chooseStream').disabled = !stream || stream.available !== true || (choices.length > 0 && !selected);
-      $('transportNote').textContent = [choices.length && !selected ? 'Os arquivos destas versões estão indisponíveis.' : '', cable ? cable.note : 'Verificando Cabo…', stream ? stream.note : 'Verificando Stream…'].filter(Boolean).join(' ');
+      $('transportNote').textContent = simple
+        ? [question, choices.length && !selected ? 'Os arquivos destas versões estão indisponíveis.' : '', cable ? cable.note : 'Conferindo a tela de jogo…'].filter(Boolean).join(' ')
+        : [choices.length && !selected ? 'Os arquivos destas versões estão indisponíveis.' : '', cable ? cable.note : 'Verificando Cabo…', stream ? stream.note : 'Verificando Stream…'].filter(Boolean).join(' ');
       var current = controllerFocus || document.activeElement;
       if (!current || current.disabled || current.hidden || (current === $('cancelTransport') && lastNavigationAt === navigationAt)) {
         focusControl(!$('chooseCable').hidden && !$('chooseCable').disabled ? $('chooseCable') : !$('chooseStream').disabled ? $('chooseStream') : $('cancelTransport'));
@@ -251,7 +260,7 @@ async function choosePresentation(game, onChoice) {
     // O diálogo responde ao clique antes de qualquer consulta de rede.
     $('chooseCable').disabled = $('chooseStream').disabled = true;
     focusControl($('cancelTransport')); render();
-    ['cable', 'stream'].forEach(function (kind) {
+    (simple ? ['cable'] : ['cable', 'stream']).forEach(function (kind) {
       var saved = presentationOrigin === base && presentationCache[kind];
       if (saved && Date.now() - saved.at < 10000) { if (kind === 'cable') cable = saved.value; else stream = saved.value; render(); }
       presentationAvailability(kind).then(function (value) { if (kind === 'cable') cable = value; else stream = value; render(); });
@@ -278,7 +287,9 @@ function presentationAvailability(kind) {
   });
   return presentationRequests[kind];
 }
-function warmPresentation() { presentationAvailability('cable'); presentationAvailability('stream'); }
+function warmPresentation() { presentationAvailability('cable'); if (!desktop) presentationAvailability('stream'); }
+// Destino abaixo da biblioteca quando Jogar está indisponível (Transmissão fica oculta no PC).
+function dockFallback() { return [$('streamShortcut'), $('settings')].find(function (b) { return b && !b.hidden && b.offsetParent !== null; }) || $('settings'); }
 function currentGame() { return libraryGames.find(function (game) { return game.id === selectedGameId; }); }
 function focusSelectedGame() { var tile = Array.from($('games').querySelectorAll('button')).find(function (b) { return b.dataset.id === selectedGameId; }); if (tile) focusControl(tile); }
 function updateBackdrop(game) {
@@ -491,12 +502,14 @@ async function refresh() {
   if (environmentNote) message(environmentNote);
   else if (previousEnvironmentNote && $('message').textContent === previousEnvironmentNote) message('');
   previousEnvironmentNote = environmentNote;
+  renderPadGlyphs(result.controller);
+  if ($('volumeButton') && !volumeChecked) { volumeChecked = true; loadVolume(false); }
   if (result.controller) {
     mouseEnabled = result.controller.enabled;
     if (desktop) document.documentElement.classList.toggle('mouse-navigation', mouseEnabled);
     $('touchpadMode').textContent = 'Mouse no touchpad: ' + (mouseEnabled ? 'ligado' : 'desligado');
     $('mouseHint').textContent = mouseEnabled ? 'Mouse no touchpad · ligado' : 'Touchpad · microfone 1,5 s';
-    $('touchpadStatus').textContent = result.controller.connected ? (result.controller.touchAvailable ? 'Segure o botão de microfone por 1,5 s para ligar/desligar. Deslize para mover; pressione o touchpad para clicar; pressione com dois dedos para clique direito. Durante a sessão na TV. Create + Options por 1 s abrem/ocultam o launcher; dois toques no microfone também funcionam no modo completo.' : 'Create + Options por 1 s abre o launcher. Bluetooth básico: microfone e touchpad indisponíveis neste modo.') : 'DualSense não encontrado para leitura compartilhada.';
+    $('touchpadStatus').textContent = result.controller.connected ? (result.controller.touchAvailable ? 'Segure o botão de microfone por 1,5 s para ligar/desligar. Deslize para mover; pressione o touchpad para clicar ou mantenha pressionado e deslize para arrastar (janelas, barras de rolagem); pressione com dois dedos para clique direito. Durante a sessão na TV. Create + Options por 1 s abrem/ocultam o launcher; dois toques no microfone também funcionam no modo completo.' : 'Create + Options por 1 s abre o launcher. Bluetooth básico: microfone e touchpad indisponíveis neste modo.') : 'DualSense não encontrado para leitura compartilhada.';
   }
 }
 var liveBackground;
@@ -650,11 +663,15 @@ function handleRemoteKey(event) {
   var before = controllerFocus, editing = before && before.tagName === 'INPUT';
   handleRemoteNavigation(event);
   if (editing) return;
+  if (event.keyCode === VOLUME_KEY) return;
+  // Ocultar o launcher toca o som de fechar no host; sem som de voltar duplicado.
+  if (suppressBackSound) { suppressBackSound = false; return; }
   if ((event.keyCode === 10009 || event.key === 'Escape') && !event.repeat) playMenuSound('back');
   else if (event.keyCode === 13 && before && !before.disabled && !event.repeat) playMenuSound('confirm');
   else if (before !== controllerFocus && [37,38,39,40].indexOf(event.keyCode) !== -1) playMenuSound('move');
 }
 function handleRemoteNavigation(event) {
+  if (handleVolumeKey(event)) return;
   var domFocus = document.activeElement;
   var active = (event.controller || !domFocus || domFocus.tagName === 'BODY') && controllerFocus && controllerFocus.isConnected ? controllerFocus : domFocus;
   var scope = $('transport') && !$('transport').hidden ? $('transport') : !$('modal').hidden ? $('modal') : !$('setup').hidden ? $('setup') : $('gameOptions') && !$('gameOptions').hidden ? $('gameOptions') : !$('options').hidden ? $('options') : document;
@@ -689,7 +706,7 @@ function handleRemoteNavigation(event) {
     else if (active && active.id === 'gameSettings') focusSelectedGame();
     else if (active && ['heroPlay','heroStop','moveToTv','streamShortcut','settings','returnGame'].indexOf(active.id) !== -1) focusSelectedGame();
     else if (typeof window !== 'undefined' && window.LGStream && window.LGStream.active) window.LGStream.fullscreen();
-    else if (desktop) api('/api/launcher/hide', {}).catch(function (e) { message(e.message); });
+    else if (desktop) { suppressBackSound = true; api('/api/launcher/hide', {}).catch(function (e) { message(e.message); }); }
     else if (typeof tizen !== 'undefined' && !local) {
       if (libraryGames.some(function (g) { return g.running; })) run(presentationMode === 'stream' ? showStream : showHdmi);
       else LGPlatform.tv.exit();
@@ -707,7 +724,7 @@ function handleRemoteNavigation(event) {
       var tiles = Array.from($('games').querySelectorAll('button')), tileIndex = tiles.indexOf(active);
       focusControl(tiles[Math.max(0, Math.min(tiles.length - 1, tileIndex + (event.keyCode === 37 ? -1 : 1)))]);
     } else if (event.keyCode === 38 && $('gameSettings') && !event.repeat) { focusControl($('gameSettings')); }
-    else if (event.keyCode === 40) { focusControl($('heroPlay').disabled ? $('streamShortcut') : $('heroPlay')); }
+    else if (event.keyCode === 40) { focusControl($('heroPlay').disabled ? dockFallback() : $('heroPlay')); }
     return;
   }
   if (scope === document && active) {
@@ -715,7 +732,7 @@ function handleRemoteNavigation(event) {
       if (event.keyCode === 38) { if (!event.repeat) active.click(); return; }
       if (event.keyCode === 40) { focusSelectedGame(); return; }
       if (event.keyCode === 37) { focusSelectedGame(); return; }
-      if (event.keyCode === 39) { focusControl($('heroPlay').disabled ? $('streamShortcut') : $('heroPlay')); return; }
+      if (event.keyCode === 39) { focusControl($('heroPlay').disabled ? dockFallback() : $('heroPlay')); return; }
     }
     if (['heroPlay','heroStop','moveToTv','streamShortcut','settings','returnGame'].indexOf(active.id) !== -1) {
       if (event.keyCode === 38) { focusSelectedGame(); return; }
@@ -739,7 +756,32 @@ function handleRemoteNavigation(event) {
   var index = controls.indexOf(active), direction = event.keyCode === 37 || event.keyCode === 38 ? -1 : 1;
   if (controls.length) focusControl(controls[(index + direction + controls.length) % controls.length]);
 }
-var menuAudioContext, menuSoundAt = 0;
+var menuAudioContext, menuSoundAt = 0, suppressBackSound = false, launcherOpenBuffer = null;
+// Som de abrir: buffer decodificado antes, disparado no primeiro quadro desenhado depois que
+// o host mostra a janela (rAF só roda com a página visível). Nunca antes do pixel; o atraso
+// restante é a latência de saída do áudio (~10–40 ms), abaixo do perceptível como dessincronia.
+function launcherAudio() {
+  if (typeof window === 'undefined') return null;
+  var Context = window.AudioContext || window.webkitAudioContext; if (!Context) return null;
+  if (!menuAudioContext) menuAudioContext = new Context();
+  return menuAudioContext;
+}
+function prepareLauncherSounds() {
+  var context = launcherAudio(); if (!context || launcherOpenBuffer || typeof fetch === 'undefined') return;
+  fetch('assets/audio/launcher-open.wav').then(function (r) { if (!r.ok) throw Error(); return r.arrayBuffer(); })
+    .then(function (data) { return new Promise(function (resolve, reject) { context.decodeAudioData(data, resolve, reject); }); })
+    .then(function (buffer) { launcherOpenBuffer = buffer; }).catch(function () {});
+}
+function playLauncherOpen() {
+  var context = launcherAudio(); if (!context || !launcherOpenBuffer) return;
+  function start() { var source = context.createBufferSource(); source.buffer = launcherOpenBuffer; source.connect(context.destination); source.onended = function () { source.disconnect(); }; source.start(); }
+  try { if (context.state === 'suspended') context.resume().then(start).catch(function () {}); else start(); } catch (_) { }
+}
+if (typeof window !== 'undefined' && window.chrome && window.chrome.webview) window.chrome.webview.addEventListener('message', function (event) {
+  if (event.data && event.data.type === 'launcher-shown') requestAnimationFrame(playLauncherOpen);
+});
+// Decodificar já no carregamento do launcher PC, antes da primeira abertura.
+if (typeof location !== 'undefined' && (desktop || /desktop=/.test(location.hash))) prepareLauncherSounds();
 function playMenuSound(kind) {
   if (typeof window === 'undefined') return;
   var Context = window.AudioContext || window.webkitAudioContext;
@@ -760,6 +802,106 @@ function playMenuSound(kind) {
     }
     if (context.state === 'suspended') context.resume().then(tone).catch(function () {}); else tone();
   } catch (_) { }
+}
+// Volume rápido: botão superior do controle (ou clique no chip) abre; setas/analógico ajustam de 5 em 5.
+var VOLUME_KEY = 1001, volumeLevel = null, volumeMuted = false, volumeChecked = false, volumeSending = false, volumePending = false, volumeHideTimer, volumeTicket = 0;
+function volumeOpen() { var hud = $('volumeHud'); return !!hud && !hud.hidden; }
+// Glifos no padrão dos botões do controle: face clara, símbolo escuro, pela posição física.
+var PAD_FACES = { dualsense: { south: 'cross', east: 'circle', north: 'triangle' }, xinput: { south: 'A', east: 'B', north: 'Y' }, 'switch-pro': { south: 'B', east: 'A', north: 'X' } };
+var padSignature = '', padGradient = 0;
+// Cada SVG tem seu gradiente: referência a defs em elemento oculto (display:none) não pinta.
+function padDefs() { var id = 'padFace' + (++padGradient); return { id: id, defs: '<defs><linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f4f5f8"/><stop offset="1" stop-color="#c7cbd3"/></linearGradient></defs>' }; }
+function padFaceSvg(symbol) {
+  var marks = { cross: '<path d="M8.2 8.2l7.6 7.6M15.8 8.2l-7.6 7.6"/>', circle: '<circle cx="12" cy="12" r="4.6"/>', triangle: '<path d="M12 7.1l5 8.6H7z"/>' }[symbol];
+  var inner = marks ? '<g fill="none" stroke="#3a3f4a" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">' + marks + '</g>'
+    : '<text x="12" y="16.3" text-anchor="middle" font-size="12.5" font-weight="700" font-family="Segoe UI,Arial,sans-serif" fill="#3a3f4a">' + symbol + '</text>';
+  var face = padDefs();
+  return '<svg viewBox="0 0 24 24" aria-hidden="true">' + face.defs + '<circle cx="12" cy="12" r="11" fill="url(#' + face.id + ')" stroke="#8d94a1" stroke-width=".8"/>' + inner + '</svg>';
+}
+function padDpadSvg(horizontal) {
+  var arrows = horizontal ? '<path d="M5.1 12l2.6-2.2v4.4zM18.9 12l-2.6-2.2v4.4z"/>' : '<path d="M5.1 12l2.6-2.2v4.4zM18.9 12l-2.6-2.2v4.4zM12 5.1l-2.2 2.6h4.4zM12 18.9l-2.2-2.6h4.4z"/>';
+  var face = padDefs();
+  return '<svg viewBox="0 0 24 24" aria-hidden="true">' + face.defs + '<path d="M9 2.5h6a1 1 0 0 1 1 1V8h4.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H16v4.5a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V16H3.5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1H8V3.5a1 1 0 0 1 1-1z" fill="url(#' + face.id + ')" stroke="#8d94a1" stroke-width=".8"/>' +
+    '<g fill="#3a3f4a">' + arrows + '</g></svg>';
+}
+function renderPadGlyphs(controller) {
+  if (!desktop || typeof document === 'undefined' || !document.querySelectorAll) return;
+  var adapter = controller && PAD_FACES[controller.adapterId] ? controller.adapterId : 'dualsense', swap = !!(controller && controller.swapConfirmBack);
+  var faces = PAD_FACES[adapter], signature = adapter + ':' + swap;
+  if (signature === padSignature) return; padSignature = signature;
+  var names = { cross: '✕', circle: '○', triangle: '△' };
+  var map = { confirm: faces[swap ? 'east' : 'south'], back: faces[swap ? 'south' : 'east'], top: faces.north };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-pad]'), function (node) {
+    var kind = node.getAttribute('data-pad');
+    node.classList.add('pad-glyph');
+    if (kind === 'dpad-h' || kind === 'dpad') { node.innerHTML = padDpadSvg(kind === 'dpad-h'); node.setAttribute('aria-label', 'Direcional'); return; }
+    var symbol = map[kind]; node.innerHTML = padFaceSvg(symbol); node.setAttribute('aria-label', names[symbol] || symbol);
+  });
+}
+function deviceLabel(name) { return !name ? 'Volume' : name.indexOf('SAMSUNG') === 0 ? 'TV Samsung' : name.replace(/\s*\([^)]*\)\s*$/, ''); }
+function renderVolume(state) {
+  if (state) { volumeLevel = state.level; volumeMuted = !!state.muted; $('volumeDevice').textContent = deviceLabel(state.device); }
+  if (volumeLevel === null) return;
+  var silent = volumeMuted || volumeLevel === 0;
+  $('volumeButton').hidden = false; $('volumeHint').hidden = false;
+  $('volumeChipLevel').textContent = volumeMuted ? 'Mudo' : volumeLevel + '%';
+  $('volumeValue').textContent = volumeMuted ? 'Mudo' : String(volumeLevel);
+  $('volumeFill').style.width = (volumeMuted ? 0 : volumeLevel) + '%';
+  $('volumeTrack').setAttribute('aria-valuenow', String(volumeMuted ? 0 : volumeLevel));
+  $('volumeButton').setAttribute('aria-label', 'Volume ' + (volumeMuted ? 'mudo' : volumeLevel + '%'));
+  $('volumeButton').classList.toggle('muted', silent); $('volumeHud').classList.toggle('muted', silent);
+}
+async function loadVolume(report) {
+  try { renderVolume(await api('/api/volume')); }
+  catch (e) { if (report) message('Volume indisponível: ' + e.message); else if (volumeLevel === null) { $('volumeButton').hidden = true; $('volumeHint').hidden = true; } }
+}
+function scheduleVolumeHide() { clearTimeout(volumeHideTimer); volumeHideTimer = setTimeout(closeVolume, 3500); }
+function openVolume() {
+  if (!connected) return;
+  $('volumeHud').hidden = false; renderVolume(); scheduleVolumeHide();
+  var ticket = ++volumeTicket;
+  // Leitura fresca para refletir mudanças feitas pelo Windows ou pelo próprio jogo.
+  if (!volumeSending) api('/api/volume').then(function (state) { if (ticket === volumeTicket && !volumeSending && !volumePending) renderVolume(state); })
+    .catch(function (e) { message('Volume indisponível: ' + e.message); closeVolume(); });
+}
+function closeVolume() { clearTimeout(volumeHideTimer); $('volumeHud').hidden = true; }
+function pulseVolume(direction) {
+  var target = $(direction > 0 ? 'volumeUp' : 'volumeDown'); target.classList.add('pulse');
+  setTimeout(function () { target.classList.remove('pulse'); }, 120);
+}
+function stepVolume(direction) {
+  if (volumeLevel === null) return;
+  var current = volumeMuted && direction > 0 ? 0 : volumeLevel;
+  var next = Math.max(0, Math.min(100, direction > 0 ? Math.floor(current / 5) * 5 + 5 : Math.ceil(current / 5) * 5 - 5));
+  volumeTicket++; pulseVolume(direction); scheduleVolumeHide();
+  if (next === volumeLevel && !(volumeMuted && direction > 0)) return;
+  volumeLevel = next; if (next > 0) volumeMuted = false; renderVolume(); playMenuSound('move'); sendVolume();
+}
+async function sendVolume() {
+  if (volumeSending) { volumePending = true; return; }
+  volumeSending = true;
+  try {
+    var applied;
+    do { volumePending = false; applied = await api('/api/volume', { level: volumeLevel }); } while (volumePending);
+    renderVolume(applied);
+  } catch (e) { message('Não foi possível ajustar o volume: ' + e.message); loadVolume(false); }
+  finally { volumeSending = false; }
+}
+function handleVolumeKey(event) {
+  if (event.keyCode === VOLUME_KEY) {
+    if (event.preventDefault) event.preventDefault();
+    if (!event.repeat) { if (volumeOpen()) closeVolume(); else openVolume(); }
+    return true;
+  }
+  if (!volumeOpen()) return false;
+  if ([37, 38, 39, 40].indexOf(event.keyCode) !== -1) { event.preventDefault(); stepVolume(event.keyCode === 38 || event.keyCode === 39 ? 1 : -1); return true; }
+  if (event.keyCode === 13 || event.keyCode === 10009 || event.key === 'Escape') { event.preventDefault(); if (!event.repeat) closeVolume(); return true; }
+  return false;
+}
+if ($('volumeButton')) {
+  $('volumeButton').onclick = function () { if (volumeOpen()) closeVolume(); else openVolume(); };
+  $('volumeUp').onclick = function () { stepVolume(1); };
+  $('volumeDown').onclick = function () { stepVolume(-1); };
 }
 document.addEventListener('keydown', handleRemoteKey);
 document.addEventListener('click', function (event) { if (event.detail > 0 && event.target.closest('button:not(:disabled)')) playMenuSound('confirm'); });
@@ -796,7 +938,8 @@ async function initialize() {
       await request(location.origin + '/desktop-session', token ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LG-Client': inputClient }, body: JSON.stringify({ token: token }) } : { headers: { 'X-LG-Client': inputClient } });
       desktop = true; localStorage.setItem('desktop-client', 'true'); session = { desktop: true }; base = location.origin;
       if ($('pcHubSection')) $('pcHubSection').hidden = false;
-      document.documentElement.classList.add('controller-navigation', 'desktop-launcher');
+      $('streamShortcut').hidden = true; $('streamSettings').hidden = true;
+      document.documentElement.classList.add('controller-navigation', 'desktop-launcher'); prepareLauncherSounds(); renderPadGlyphs(null);
       history.replaceState(null, '', location.pathname); document.title = 'LazyGaming — PC';
       var back = button('Ocultar launcher', function () { return api('/api/launcher/hide', {}); }); back.id = 'returnGame'; $('dockActions').appendChild(back);
     } catch (_) { desktop = false; localStorage.removeItem('desktop-client'); }

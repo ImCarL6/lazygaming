@@ -25,14 +25,25 @@ public interface ISessionPlatform
     void PrepareDesktop(Displays.Snapshot original) => ConfigureMonitors(original, true);
     void ConfigureMonitors(Displays.Snapshot original, bool enabled);
     void RestoreDisplays(Displays.Snapshot snapshot);
+    void RestoreSessionDisplays(Displays.Snapshot snapshot) => RestoreDisplays(snapshot);
     void ReconfirmDesktop() { }
     List<AudioDevice> ListAudio();
+    bool KeepAudio => false;
+    AudioDevice? SessionAudio(List<AudioDevice> devices) => devices.SingleOrDefault(d => d.Name.StartsWith("SAMSUNG (NVIDIA", StringComparison.OrdinalIgnoreCase));
     string[] CaptureAudio();
     void SelectAudio(string id);
     void RestoreAudio(string[] ids);
 }
 public sealed class NativeSessionPlatform(Func<nint>? gameWindow = null, Action? alignLauncher = null) : ISessionPlatform
 {
+    public bool KeepAudio => Displays.Preferences().AudioDeviceId == "keep";
+    public AudioDevice? SessionAudio(List<AudioDevice> devices) {
+        var id = Displays.Preferences().AudioDeviceId;
+        if (!string.IsNullOrEmpty(id)) return devices.SingleOrDefault(d => d.Id == id);
+        var name = Displays.Tv().Name;
+        var matches = devices.Where(d => d.Name.Contains(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
     DesktopWindows? initialWindows;
     public void ValidateTv() => _ = Displays.Tv();
     public Displays.Snapshot CaptureDisplays() => Displays.Capture();
@@ -57,6 +68,7 @@ public sealed class NativeSessionPlatform(Func<nint>? gameWindow = null, Action?
         windows.Restore();
         initialWindows = null;
     }
+    public void RestoreSessionDisplays(Displays.Snapshot snapshot) => RestoreDisplays(Displays.RestorePlan(snapshot, Displays.Preferences().RestoreTvState));
     public List<AudioDevice> ListAudio() => Audio.List();
     public string[] CaptureAudio() => Audio.CaptureDefaults();
     public void SelectAudio(string id) => Audio.Select(id);
@@ -82,7 +94,7 @@ public sealed class TvSession : IGameEnvironment
         if (Active) { try { available = Ready(); } catch { available = false; } }
         return new(Active, monitorsEnabled, available, available ? null : "A TV perdeu o destino de vídeo. Use Continuar na TV para recuperar somente a TV antes de alterar os monitores.");
     } } }
-    public object Status { get { lock (gate) return new { active = Active, audioPending = Active && !saved!.Stream && !manualAudio && audioId == null, note, restoreFailed }; } }
+    public object Status { get { lock (gate) return new { active = Active, audioPending = Active && !saved!.Stream && !manualAudio && !platform.KeepAudio && audioId == null, note, restoreFailed }; } }
     public TvSession(string directory, ISessionPlatform? platform = null)
     {
         this.directory = directory;
@@ -122,7 +134,7 @@ public sealed class TvSession : IGameEnvironment
                     platform.ConfigureMonitors(saved.Displays, false);
                 }
             }
-            catch { Restore(); throw; }
+            catch { RestoreCore(true); throw; }
             Tick();
         }
     }
@@ -130,14 +142,14 @@ public sealed class TvSession : IGameEnvironment
     {
         lock (gate)
         {
-            if (!Active || saved!.Stream || manualAudio || restoreFailed) return;
+            if (!Active || saved!.Stream || manualAudio || platform.KeepAudio || restoreFailed) return;
             try
             {
                 var devices = platform.ListAudio();
-                var tvs = devices.Where(d => d.Name.StartsWith("SAMSUNG (NVIDIA", StringComparison.OrdinalIgnoreCase)).ToArray();
-                if (tvs.Length != 1) { audioId = null; note = "Aguardando a saída de áudio HDMI da TV…"; return; }
-                if (!tvs[0].Current) platform.SelectAudio(tvs[0].Id);
-                audioId = tvs[0].Id; note = null;
+                var target = platform.SessionAudio(devices);
+                if (target == null) { audioId = null; note = "Escolha a saída de áudio na Central do PC ou aguarde o HDMI…"; return; }
+                if (!target.Current) platform.SelectAudio(target.Id);
+                audioId = target.Id; note = null;
             }
             catch { audioId = null; note = "Aguardando o áudio da TV. O auxiliar continuará tentando."; }
         }
@@ -170,14 +182,16 @@ public sealed class TvSession : IGameEnvironment
             monitorsEnabled = preferredMonitorsEnabled = enabled;
         }
     }
-    public void Restore()
+    public void Restore() => RestoreCore(false);
+    void RestoreCore(bool exact)
     {
         lock (gate)
         {
             if (saved == null || restoreFailed) return;
             try
             {
-                platform.RestoreDisplays(saved.Displays);
+                if (exact) platform.RestoreDisplays(saved.Displays);
+                else platform.RestoreSessionDisplays(saved.Displays);
                 platform.RestoreAudio(saved.Audio);
                 GameDisplaySettings.Restore(directory);
                 saved = null; manualAudio = false; audioId = null; note = null;

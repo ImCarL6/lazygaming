@@ -17,8 +17,8 @@ public static partial class Displays
         var tvKey = TargetKey(tv);
         if (!current.Paths.Any(p => TargetKey(p) == tvKey)) throw new InvalidOperationException("A sessão da TV não está ativa.");
         var tvSource = SourceOf(current, tv);
-        if (tvSource.Position.X != 0 || tvSource.Position.Y != 0 || tvSource.Width != 3840 || tvSource.Height != 2160 || Math.Abs(Rate(tv.Target.Refresh) - 60) > .2)
-            throw new InvalidOperationException("Prepare a TV como tela principal 4K/60 antes de alterar os monitores.");
+        if (tvSource.Position.X != 0 || tvSource.Position.Y != 0 || tvSource.Width == 0 || tvSource.Height == 0 || Rate(tv.Target.Refresh) <= 0)
+            throw new InvalidOperationException("Prepare a TV como tela principal antes de alterar os monitores.");
         var paths = new List<PathInfo>(); var modes = new List<ModeInfo>();
         var usedSources = new HashSet<string>();
         void Add(PathInfo path, SourceMode source, ModeInfo target)
@@ -33,10 +33,9 @@ public static partial class Displays
         Add(tv, tvSource, TargetOf(current, tv));
         if (enabled) {
             var monitors = original.Paths.Where(p => TargetKey(p) != tvKey).ToArray();
-            if (monitors.Length == 0) throw new InvalidOperationException("Não há monitores salvos no início desta sessão.");
             if (monitors.Select(SourceKey).Distinct().Count() != monitors.Length) throw new InvalidOperationException("Monitores clonados não são suportados neste perfil.");
-            var left = monitors.Min(p => SourceOf(original, p).Position.X);
-            var top = monitors.Min(p => SourceOf(original, p).Position.Y);
+            var left = monitors.Select(p => SourceOf(original, p).Position.X).DefaultIfEmpty(0).Min();
+            var top = monitors.Select(p => SourceOf(original, p).Position.Y).DefaultIfEmpty(0).Min();
             foreach (var saved in monitors) {
                 var candidates = available.Paths.Where(p => TargetKey(p) == TargetKey(saved) && p.Target.Available && !usedSources.Contains(SourceKey(p)) &&
                     !current.Paths.Any(a => TargetKey(a) != TargetKey(saved) && SourceKey(a) == SourceKey(p))).ToArray();
@@ -76,7 +75,7 @@ public static partial class Displays
         var tv = Tv(); var s = Capture(); var matches = s.Paths.Where(p => Name(p).DevicePath == tv.DevicePath).ToArray();
         if (matches.Length != 1) return false;
         var source = SourceOf(s, matches[0]);
-        return (!requirePrimary || (source.Position.X == 0 && source.Position.Y == 0)) && source.Width == 3840 && source.Height == 2160 && Math.Abs(Rate(matches[0].Target.Refresh) - 60) < .2;
+        return (!requirePrimary || (source.Position.X == 0 && source.Position.Y == 0)) && source.Width == tv.Width && source.Height == tv.Height && Math.Abs(Rate(matches[0].Target.Refresh) - tv.Hz) < .2;
     }
     public static System.Drawing.Rectangle TvBounds()
     {
@@ -138,9 +137,20 @@ public static partial class Displays
             new ModeInfo { Type = 2, Target = preferred.Mode }), tv);
         var target = planned.Paths.Single(p => TargetKey(p) == TargetKey(tv));
         var source = SourceOf(planned, target);
-        if (source.Width != 3840 || source.Height != 2160 || Math.Abs(Rate(target.Target.Refresh) - 60) > .2)
-            throw new InvalidOperationException("A TV precisa estar em 4K/60 para preservar este desktop.");
+        if (source.Width != device.Width || source.Height != device.Height || Math.Abs(Rate(target.Target.Refresh) - device.Hz) > .2)
+            throw new InvalidOperationException("A TV precisa estar no modo nativo para preservar este desktop.");
         ApplyLayout(Capture(), planned, alignWindows);
+    }
+    public static Snapshot RestorePlan(Snapshot original, bool restoreTvState) {
+        if (restoreTvState) return original;
+        var device = SelectTarget(List(), Preferences().DisplayPath);
+        if (device == null) return original; // A disconnected TV never prevents desktop recovery.
+        var available = Capture(true);
+        var tv = available.Paths.First(p => Name(p).DevicePath == device.DevicePath && p.Target.Available);
+        var preferred = Preferred(tv);
+        return PlanDesktop(original, available, tv,
+            new SourceMode { Width = preferred.Width, Height = preferred.Height, PixelFormat = 4 },
+            new ModeInfo { Type = 2, Target = preferred.Mode });
     }
     static void ApplyLayout(Snapshot before, Snapshot planned, Action? alignWindows)
     {

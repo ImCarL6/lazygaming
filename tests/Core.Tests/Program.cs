@@ -10,6 +10,9 @@ static byte[] Report(bool bluetooth = false) {
 }
 
 IControllerAdapter adapter = new DualSenseAdapter();
+MultiControllerTests.Run();
+NoticePolicyTests.Run();
+ShortcutCaptureTests.Run();
 foreach (bool bt in new[] { false, true }) {
     var bytes = Report(bt);
     var state = adapter.Decode(bytes)!;
@@ -22,6 +25,13 @@ foreach (bool bt in new[] { false, true }) {
 var basic = new byte[78]; basic[0] = 1; basic[5] = 8;
 for (int i = 1; i <= 4; i++) basic[i] = 128;
 Check(adapter.Decode(basic) is { Microphone: null, Touch: null, Neutral: true }, "BT básico preenchido não inventa capacidades");
+for(int counter=0;counter<64;counter++) {
+    basic[7]=(byte)(counter<<2);
+    Check(adapter.Decode(basic) is { Neutral:true, RawButtons:PadButtons.None, Microphone:null },"BT basic report counter never blocks release");
+}
+basic[7]=0x0c; basic[6]=0x30;
+Check(adapter.Decode(basic) is{Neutral:false,LauncherChord:true,RawButtons:PadButtons.Select|PadButtons.Start},"basic Bluetooth still reads Create+Options with counter");
+basic[6]=0;basic[7]=0;
 for (int length = 0; length < 10; length++) Check(adapter.Decode(new byte[length]) == null, "relatório truncado recusado");
 Check(adapter.Decode(new byte[78]) == null, "ID desconhecido recusado");
 
@@ -33,6 +43,24 @@ Check(processor.Process(confirm, 90, true, true).Navigation.Single().Key == 13, 
 Check(processor.Process(confirm, 490, true, true).Navigation.Count == 0, "confirmar mantido não repete");
 processor.Process(neutral, 500, true, false);
 Check(processor.Process(confirm, 590, true, true).Navigation.Count == 0, "perda de foco exige soltura nova");
+{
+    var volumeProcessor = new ControllerProcessor(); var rawNeutral = neutral with { RawButtons = PadButtons.None };
+    volumeProcessor.Process(rawNeutral, 0, true, true); volumeProcessor.Process(rawNeutral, 80, true, true);
+    var north = rawNeutral with { Neutral = false, RawButtons = PadButtons.North };
+    Check(volumeProcessor.Process(north, 90, true, true).Navigation.Single().Key == NativeNavigation.VolumeKey, "botão superior abre volume rápido");
+    Check(volumeProcessor.Process(north, 900, true, true).Navigation.Count == 0, "volume mantido não repete");
+    var reserved = new ControllerProcessor(); var options = new ControllerOptions(Launcher: new ShortcutBinding(PadButtons.North));
+    reserved.Process(rawNeutral, 0, true, true, options); reserved.Process(rawNeutral, 80, true, true, options);
+    Check(reserved.Process(north, 90, true, true, options).Navigation.Count == 0, "botão superior de atalho configurado não abre volume");
+}
+{
+    var dragger = new ControllerProcessor(); var still = neutral with { Touch = new(new(1, 100, 100), null) }; var micDown = neutral with { Microphone = true, Neutral = false };
+    dragger.Process(neutral, 0, true, false); dragger.Process(micDown, 100, true, false); dragger.Process(micDown, 1700, true, false); dragger.Process(still, 1800, true, false);
+    Check(dragger.Enabled && dragger.Process(still with { TouchpadPressed = true }, 1810, true, false).Mouse.Single().Kind == "left-down", "arrasto iniciado");
+    Check(dragger.Process(still with { TouchpadPressed = true }, 1820, true, false, new ControllerOptions(Sensitivity: 1200)).Mouse.Contains(new MouseAction("left-up")) && !dragger.Dragging, "troca de opções durante arrasto solta o botão");
+    dragger.Process(micDown, 1830, true, false, new ControllerOptions(Sensitivity: 1200));
+    Check(dragger.Process(null, 1840, true, false).Mouse.Count == 0, "sem arrasto ativo não há soltura extra");
+}
 processor.Reset(1000);
 var mic = neutral with { Microphone = true, Neutral = false };
 processor.Process(mic, 1100, true, false);
@@ -44,13 +72,18 @@ Check(processor.Process(touch, 2810, true, false).Mouse.Count == 0, "toque leve 
 var move = touch with { Touch = new(new(1, 110, 105), null) };
 Check(processor.Process(move, 2820, true, false).Mouse.Single() == new MouseAction("move", 14, 7), "gesto produz movimento relativo");
 var click = move with { TouchpadPressed = true };
-Check(processor.Process(click, 2830, true, false).Mouse.Single().Kind == "left-click", "pressão faz clique único");
+Check(processor.Process(click, 2830, true, false).Mouse.Single().Kind == "left-down" && processor.Dragging, "pressão segura o botão esquerdo");
 Check(processor.Process(click, 2840, true, false).Mouse.Count == 0, "clique mantido não repete");
-processor.Process(touch, 2850, true, false);
+Check(processor.Process(click with { Touch = new(new(1, 118, 109), null) }, 2842, true, false).Mouse.Count == 0, "tremida ao pressionar não arrasta");
+Check(processor.Process(click with { Touch = new(new(1, 140, 109), null) }, 2844, true, false).Mouse.Single() is { Kind: "move", X: > 30 }, "arrastar com o dedo move segurando o botão");
+Check(processor.Process(click with { Touch = new(new(1, 150, 109), null) }, 2846, true, false).Mouse.Single() == new MouseAction("move", 14, 0), "arrasto continua sem zona morta");
+Check(processor.Process(touch, 2850, true, false).Mouse.First().Kind == "left-up" && !processor.Dragging, "soltar o touchpad solta o botão");
 var right = touch with { TouchpadPressed = true, Touch = new(new(1, 100, 100), new(2, 200, 100)) };
 Check(processor.Process(right, 2860, true, false).Mouse.Single().Kind == "right-click", "pressão com dois dedos faz clique direito");
 processor.Process(touch, 2870, true, false);
-Check(processor.Process(click, 2880, false, false).Mouse.Count == 0 && !processor.Enabled, "fim da sessão bloqueia inclusive o último clique");
+processor.Process(click, 2875, true, false);
+Check(processor.Process(click, 2880, false, false).Mouse.Single().Kind == "left-up" && !processor.Enabled, "fim da sessão solta o botão e bloqueia novos cliques");
+Check(processor.Process(click, 2890, false, false).Mouse.Count == 0, "sem sessão nenhum clique");
 processor.Process(mic, 3000, true, false); processor.Process(mic, 4500, true, false);
 Check(processor.Enabled, "mouse reativado"); processor.Process(null, 4510, true, true);
 Check(!processor.Enabled && !processor.Released(4600), "desconexão/inválido limpa gesto, mouse e soltura");

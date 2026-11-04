@@ -10,6 +10,8 @@ public sealed class WindowsMouseOutput : IMouseOutput
         {
             "move" => [new() { Mouse = new() { X = action.X, Y = action.Y, Flags = 1 } }],
             "left-click" => [new() { Mouse = new() { Flags = 2 } }, new() { Mouse = new() { Flags = 4 } }],
+            "left-down" => [new() { Mouse = new() { Flags = 2 } }],
+            "left-up" => [new() { Mouse = new() { Flags = 4 } }],
             "right-click" => [new() { Mouse = new() { Flags = 8 } }, new() { Mouse = new() { Flags = 16 } }],
             _ => []
         };

@@ -4,18 +4,16 @@ namespace LazyGaming;
 public sealed record CableAvailability(bool? Available, bool Active, string? Note);
 public static class Presentation
 {
-    public static CableAvailability Cable(IEnumerable<Displays.Screen> screens)
+    public static CableAvailability Cable(IEnumerable<Displays.Screen> screens, string? selected = null)
     {
-        var matches = screens.Where(s => s.Technology == 5 && s.Name == "SAMSUNG" && s.Width == 3840 && s.Height == 2160 && s.Available).ToArray();
-        return matches.Length switch {
-            1 => new(true, matches[0].Active, null),
-            0 => new(false, false, "A TV não foi identificada no HDMI do PC."),
-            _ => new(null, false, "Há mais de uma TV compatível. Confira o destino antes de jogar.")
-        };
+        var available = screens.Where(s => s.Available).ToArray();
+        var target = Displays.SelectTarget(available, selected);
+        if (target != null) return new(true, target.Active, null);
+        return new(available.Length == 0 || !string.IsNullOrEmpty(selected) ? false : null, false, "Escolha a tela de jogo na Central do PC e confira a conexão.");
     }
     public static CableAvailability InspectCable()
     {
-        try { return Cable(Displays.List()); }
+        try { return Cable(Displays.List(), Displays.Preferences().DisplayPath); }
         catch { return new(null, false, "Não foi possível conferir o HDMI. Confira o cabo antes de continuar."); }
     }
     public static void Validate(string mode, bool streamReady = false)

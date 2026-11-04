@@ -9,6 +9,7 @@ public sealed class Security
     public string Identity { get; }
     public string Code { get; private set; } = "";
     byte[]? key;
+    public bool Paired { get { lock (gate) return key != null; } }
     readonly string file;
     DateTime expires;
     int attempts;

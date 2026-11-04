@@ -2,13 +2,21 @@
 
 Launcher para escolher, abrir, continuar e encerrar jogos do PC pela TV Samsung ou por uma janela executável no Windows. Biblioteca e interface compartilhadas; DualSense conectado ao PC. HDMI é o caminho principal, com streaming Moonlight integrado como alternativa.
 
-## Estado — fontes 0.17.0
+## Estado — PC 0.21.1 / ZIP distribuível anterior 0.19.0 / TV 0.17.0
 
 A base 0.14.0 já foi usada no PC e em uma Samsung CU7700. A revisão 0.15 organiza o produto em módulos e adiciona testes de adaptadores de controle; 0.15.1 acrescenta fichas locais independentes da Steam; 0.15.2 abre o seletor Cabo/Stream imediatamente e permite escolher Cabo sem aguardar a consulta de Stream. Build/testes automatizados não substituem uso físico: estas revisões ainda precisam ser validadas com DualSense real e TV. Não é uma publicação na loja Samsung nem um instalador universal.
 
 A revisão 0.16 acrescenta a Central do PC para administrar jogos, pastas de busca automática, cadastros locais, monitores e áudio. O cadastro tem gravação durável, reserva e exclusão mútua entre importações; instalações indisponíveis continuam identificáveis na Central.
 
 A revisão 0.17 permite várias versões sob uma única capa. No Pokopia, **Português (Brasil)** e **English** aparecem no próprio painel de Cabo/Stream; a versão em português usa os ícones DualSense. A última versão aberta fica guardada no PC e vale para PC/TV. Continuar retoma a versão em execução; para mudar, encerre pelo launcher e escolha o outro idioma ao jogar novamente. Jogos sem alternativas mantêm o fluxo anterior. [Cadastro de versões e contrato](docs/VERSOES-DE-JOGO.md).
+
+A revisão PC 0.18 prepara distribuição Windows para uma ou várias telas, com destino físico configurável, política opcional de restauração da TV, XInput (Xbox/8BitDo), leitura experimental Switch Pro, atalhos configuráveis e mouse pelo analógico direito. Novas opções em **Central → Configurações**. Pacotes versionados incluem atualizador manual com integridade, backup e rollback dos binários; dados ficam fora da instalação. Testes sintéticos não comprovam os novos controles fisicamente. [Uso, compatibilidade e atualizações](docs/PC-PARA-AMIGOS.md).
+
+A revisão PC 0.19 acrescenta configuração inicial básica, atalho de abertura já no primeiro uso, reconhecimento das capacidades DualSense e sugestão discreta para telas Samsung. Atualizações preservam configurações existentes.
+
+A revisão PC 0.21 simplifica a configuração inicial, grava atalhos diretamente pelo controle e usa microfone com duplo toque para o launcher e hold de 1,5 s para o mouse quando o DualSense fornece esses recursos. O tempo aparece somente para o gesto de segurar. A Central usa tema escuro lavanda/azul e oferece reabertura do aplicativo após sair, por um protocolo local registrado no Windows, com fallback para o atalho. Configurações personalizadas são preservadas. Pacote local self-contained publicado e instalado; novos controles ainda dependem de validação física.
+
+PC 0.21.1 corrige a soltura no Bluetooth básico e solicita os recursos completos do DualSense automaticamente, com fallback para leitura básica. A Central atualiza o controle detectado sem recarregar, aceita gravar um botão com toque simples e mostra a tela offline no topo ao sair. Nintendo detectado ou selecionado usa A para confirmar; a troca manual fica nas opções avançadas. Demais controles confirmam pelo botão inferior. Abertura física do launcher pelo microfone confirmada nesta instalação; demais controles dependem de validação física.
 
 ## Usar no PC
 
@@ -19,6 +27,12 @@ python -m pip install -r requirements-dev.txt
 python scripts/Obter-Motor.py
 powershell -NoProfile -File scripts/Testar.ps1
 powershell -NoProfile -File scripts/Publicar-PC.ps1
+```
+
+Instalador para compartilhar (ZIP de distribuição + `LazyGaming-Setup-<versão>.exe` via IExpress do Windows, por usuário, sem assinatura digital):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Construir-Instalador-PC.ps1
 ```
 
 O executável fica em `outputs/pc-package/LazyGaming.Host.exe`. Execute com `--lan` para disponibilizar o auxiliar na rede local. Com o auxiliar aberto, `--open-launcher` abre a interface nativa e reutiliza a instância. Os scripts não instalam serviço, tarefa automática, regra de Firewall nem alteram uma instalação existente. Se necessário, permita o executável somente na sua rede privada pelas configurações do Windows.

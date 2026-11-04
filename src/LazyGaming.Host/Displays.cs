@@ -45,8 +45,16 @@ public static partial class Displays
                 preferred.Mode.Signal.VSync.Denominator == 0 ? 0 : (double)preferred.Mode.Signal.VSync.Numerator / preferred.Mode.Signal.VSync.Denominator);
         }).ToList();
     }
-    public static Screen Tv() => List().SingleOrDefault(s => s.Available && s.Technology == 5 && s.Name == "SAMSUNG" && s.Width == 3840 && s.Height == 2160)
-        ?? throw new InvalidOperationException("A TV Samsung 4K não foi identificada no HDMI. Confira o cabo e tente novamente.");
+    public static Func<PcPreferences> Preferences { get; set; } = () => new();
+    public static Screen? SelectTarget(IEnumerable<Screen> screens, string? selected = null) {
+        var available = screens.Where(s => s.Available).ToArray();
+        if (string.IsNullOrEmpty(selected) && available.Length == 1) return available[0];
+        var matches = available.Where(s => string.IsNullOrEmpty(selected)
+            ? s.Technology == 5 : string.Equals(s.DevicePath, selected, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
+    public static Screen Tv() => SelectTarget(List(), Preferences().DisplayPath)
+        ?? throw new InvalidOperationException("Escolha a tela de jogo na Central do PC e confira o cabo HDMI.");
     public static void PrepareTv()
     {
         var tv = Tv();
@@ -101,7 +109,7 @@ public static partial class Displays
         if (tv) {
             var device = Tv();
             var paths = capture.Paths.Where(p => Name(p).DevicePath == device.DevicePath).ToArray();
-            if (paths.Length != 1) throw new InvalidOperationException("A tela Samsung de captura está inativa ou ambígua.");
+            if (paths.Length != 1) throw new InvalidOperationException("A tela de jogo está inativa ou ambígua.");
             return capture.Modes[paths[0].Source.ModeIndex].Source;
         }
         var sources = capture.Modes.Where(m => m.Type == 1 && m.Source.Position.X == 0 && m.Source.Position.Y == 0).ToArray();

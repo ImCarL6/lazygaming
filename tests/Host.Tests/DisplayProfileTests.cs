@@ -26,6 +26,9 @@ static class DisplayProfileTests
         Check(Displays.WaitForStableLayout(() => ++checks > 3, () => { }), "aguardar negociação e estabilidade consecutiva");
         Check(!Displays.WaitForStableLayout(() => throw new InvalidOperationException(), () => { }), "consulta transitória falha sem falso sucesso");
         var tv = Snapshot((3, 0, 3840, 2160, 0, 60));
+        var solo = Snapshot((1,0,1920,1080,0,144));
+        Check(Displays.SameLayout(solo,Displays.PlanMonitors(solo,solo,solo,solo.Paths[0],true)),"monitor único ligado sem demais telas é no-op");
+        Check(Displays.SameLayout(solo,Displays.PlanMonitors(solo,solo,solo,solo.Paths[0],false)),"desligar demais telas preserva monitor único em1080p144");
         var original = Snapshot((1, 0, 1920, 1080, -1920, 60), (2, 1, 2560, 1440, 0, 165));
         var all = new Displays.Snapshot([Path(1, 0), Path(1, 1), Path(1, 2), Path(2, 0), Path(2, 1), Path(2, 2), Path(3, 0)], []);
         var json = JsonSerializer.Serialize(original, new JsonSerializerOptions { IncludeFields = true });

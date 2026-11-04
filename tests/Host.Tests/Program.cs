@@ -19,6 +19,12 @@ try { Presentation.Validate("stream"); } catch (InvalidOperationException) { str
 Assert(streamRejected, "Stream não configurado é rejeitado antes de preparar sessão");
 Presentation.Validate("cable");
 DisplayProfileTests.Run();
+PcSetupTests.Run();
+await MouseTogglePipelineTests.Run();
+await ControllerPipelineTests.Run();
+RuntimeDependencyTests.Run();
+HostStartupTests.Run();
+await PcCompatibilityTests.Run();
 await DisplayPreferenceTests.Run();
 StreamingTests.Run();
 PairingRecoveryTests.Run();

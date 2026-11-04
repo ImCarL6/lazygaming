@@ -42,10 +42,12 @@ __pycache__/
 !/docs/PROMPT-HENRIQUE-0.15.md
 !/docs/ESTADO-DERIVADO-MODELO.md
 !/docs/VERSOES-DE-JOGO.md
+!/docs/PC-PARA-AMIGOS.md
 pairing.json
 tv-recovery.json
 session.json
 admin.json
+pc-command.json
 
 # Runtime upstream obtido com checksum; não redistribuir binários no Git
 /tv/stream-engine/moonlight-wasm.js

@@ -19,6 +19,9 @@ async function hub(route,body,origin=base){const result=await call(route,body,{C
 try{
  for(let i=0;i<100;i++){try{if((await fetch(base+'/api/discover')).ok)break;}catch{}if(child.exitCode!==null)throw Error(logs);await new Promise(r=>setTimeout(r,100));}
  assert.equal((await call('/api/hub')).response.status,401);
+ key=JSON.parse(readFileSync(join(data,'pc-command.json'),'utf8')).Key;
+ assert.equal((await signed('/api/hub/open',{})).response.status,200,'PC opens without pairing any TV');
+ assert.equal((await signed('/api/status')).response.status,401,'local opening key cannot control games/status');
  const code=(await call('/api/local-pairing',{})).value.code;key=(await call('/api/pair',{code})).value.key;
  const pairing=readFileSync(join(data,'pairing.json'),'utf8');
  const url=(await signed('/api/hub/open',{})).value.url, token=new URL(url).hash.slice(1);
@@ -27,6 +30,33 @@ try{
  assert.match(session.response.headers.get('set-cookie'),/httponly/i);
  assert.equal((await call('/hub-session',{token},{Origin:base})).response.status,403);
  assert.equal((await hub('/api/hub/scan',{},'https://example.com')).response.status,401);
+ assert.equal((await call('/api/hub/controller-capture')).response.status,401);
+ assert.equal((await call('/api/hub/controller')).response.status,401);
+ assert.equal((await hub('/api/hub/controller')).response.status,200);
+ assert.equal((await hub('/api/hub/controller-capture',{},'https://example.com')).response.status,401);
+ assert.equal((await hub('/api/hub/controller-capture',{})).response.status,200);
+ assert.equal((await hub('/api/hub/controller-capture',{})).response.status,409,'capture is exclusive');
+ assert.equal((await hub('/api/hub/controller-capture')).value.phase,'release');
+ await hub('/api/hub/controller-capture/cancel',{});
+ assert.equal((await hub('/api/hub/controller-capture')).value.phase,'idle');
+ assert.equal((await hub('/api/hub/setup')).value.preferences.setupCompleted,false);
+ assert.equal((await hub('/api/hub/setup',{displayPath:'missing'})).response.status,409);
+ assert.equal((await hub('/api/hub/setup',{displayPath:'test-display'},'https://example.com')).response.status,401);
+ assert.equal((await hub('/api/hub/setup',{displayPath:'test-display',controllerSource:'auto',audioDeviceId:'keep',onlyGameDisplay:true,launcher:{buttons:64,gesture:'double-tap',holdMs:1000}})).response.status,200);
+ assert.equal((await hub('/api/hub/setup')).value.preferences.setupCompleted,true);
+ assert.equal((await hub('/api/hub/setup')).value.preferences.controller.launcher.gesture,'double-tap');
+ assert.equal((await hub('/api/hub/samsung-hint/dismiss',{})).response.status,200);
+ const setup=(await hub('/api/hub/pc-settings')).value;
+ assert.equal((await hub('/api/hub/pc-settings',{...setup.preferences,controllerSource:'invalid'})).response.status,409);
+ assert.equal((await hub('/api/hub/pc-settings',setup.preferences,'https://example.com')).response.status,401);
+ const changed=await hub('/api/hub/pc-settings',{...setup.preferences,displayPath:'fixture-screen',restoreTvState:false,controllerSource:'xinput',controller:{sensitivity:1400}});
+ assert.equal(changed.response.status,200,JSON.stringify(changed.value));
+ assert.equal((await hub('/api/hub/pc-settings')).value.preferences.controller.sensitivity,1400);
+ assert.equal((await hub('/api/hub/activity',{enabled:false})).response.status,200);
+ assert.equal((await hub('/api/status')).value.enabled,false);
+ assert.equal((await signed('/api/displays',{monitorsEnabled:false})).response.status,409,'pause blocks display actions');
+ assert.equal((await hub('/api/hub/activity',{enabled:true},'https://example.com')).response.status,401);
+ assert.equal((await hub('/api/hub/activity',{enabled:true})).response.status,200);
  let added=await hub('/api/hub/import',{title:'Example local',executable:exe});assert.equal(added.response.status,200,JSON.stringify(added.value));
  assert.equal(added.value.games.length,1);let id=added.value.games[0].id;
  assert.equal((await hub('/api/hub/import',{title:'Example local',executable:exe})).value.games.length,1);

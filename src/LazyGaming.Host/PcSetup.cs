@@ -1,0 +1,50 @@
+using System.Text.RegularExpressions;
+
+namespace LazyGaming;
+
+public sealed record ControllerDetection(string? Kind, string Name, bool Connected, bool Touchpad, bool Microphone, string Note);
+public sealed record InitialPcSetup(string DisplayPath, string ControllerSource = "auto", string? AudioDeviceId = null, bool OnlyGameDisplay = true,
+    ShortcutBinding? Launcher = null, ControllerOptions? Controller = null);
+
+public static class PcSetup
+{
+    public static ControllerOptions Defaults(ControllerDetection controller, string source = "auto") => controller is { Kind:"dualsense", Microphone:true }
+        ? new(Launcher:new(PadButtons.Microphone,"double-tap"),Mouse:new(PadButtons.Microphone,"hold",1500))
+        : new(SwapConfirmBack:source == "switch-pro" || source == "auto" && controller.Kind == "switch-pro");
+    public static ControllerOptions Effective(PcPreferences preferences,ControllerDetection controller) {
+        var defaults=Defaults(controller,preferences.ControllerSource);
+        var options=preferences.Controller ?? defaults;
+        options=options with{Launcher=options.Launcher ?? defaults.Launcher,Mouse=options.Mouse ?? defaults.Mouse};
+        // Keep saved microphone shortcuts, but use available buttons in basic Bluetooth.
+        if(controller is { Kind:"dualsense", Connected:true, Microphone:false }) {
+            if((options.LauncherBinding.Buttons & PadButtons.Microphone)!=0)options=options with{Launcher=defaults.LauncherBinding};
+            if((options.MouseBinding.Buttons & PadButtons.Microphone)!=0)options=options with{Mouse=defaults.MouseBinding};
+        }
+        return options with{SwapConfirmBack=preferences.ConfirmBackOverride ?? defaults.SwapConfirmBack};
+    }
+    public static ControllerDetection Controller(string? adapter, bool touch = false, bool mic = false, string? brand = null) => adapter switch {
+        "dualsense" => new(adapter,"DualSense",true,touch,mic, touch && mic
+            ? "Touchpad, clique e atalhos do microfone disponíveis automaticamente."
+            : "Nesta conexão, use Create + Options para abrir. Microfone e movimento pelo touchpad precisam de USB ou Bluetooth completo."),
+        "xinput" => new(adapter,brand == "8BitDo" ? "8BitDo" : brand == "Xbox" ? "Controle Xbox" : "Xbox / controle compatível",true,false,false,"Navegação e mouse pelo analógico disponíveis automaticamente."),
+        "switch-pro" => new(adapter,"Switch Pro",true,false,false,"Navegação e analógico disponíveis. Suporte experimental."),
+        _ => new(null,"Nenhum controle detectado ainda",false,false,false,"Conecte o controle por USB ou Bluetooth. Você também pode escolher o tipo e conectá-lo depois.")
+    };
+    public static bool IsSamsung(Displays.Screen screen) => screen.Available &&
+        (screen.Name.Contains("Samsung",StringComparison.OrdinalIgnoreCase) ||
+        Regex.IsMatch(screen.DevicePath,@"DISPLAY[#\\]SAM[0-9A-F]{4}(?:[#\\]|$)",RegexOptions.IgnoreCase));
+    public static bool SuggestSamsung(IEnumerable<Displays.Screen> screens, PcPreferences preferences, bool paired) {
+        var screen = Displays.SelectTarget(screens,preferences.DisplayPath);
+        return screen != null && IsSamsung(screen) && !preferences.SamsungHintDismissed && !preferences.TvIntegrationEnabled && !paired;
+    }
+    public static PcPreferences Complete(PcPreferences current, InitialPcSetup setup, IEnumerable<Displays.Screen> screens, IEnumerable<AudioDevice> audio) {
+        if (string.IsNullOrWhiteSpace(setup.DisplayPath) || !screens.Any(s=>s.Available && s.DevicePath==setup.DisplayPath))
+            throw new InvalidOperationException("Escolha a tela em que você vai jogar.");
+        if (!string.IsNullOrEmpty(setup.AudioDeviceId) && setup.AudioDeviceId != "keep" && !audio.Any(d=>d.Id==setup.AudioDeviceId))
+            throw new InvalidOperationException("Escolha uma saída de áudio disponível.");
+        var next = current with { DisplayPath=setup.DisplayPath, ControllerSource=setup.ControllerSource, AudioDeviceId=setup.AudioDeviceId, SetupCompleted=true,
+            ConfirmBackOverride=setup.ControllerSource==current.ControllerSource?current.ConfirmBackOverride:null,
+            Controller = setup.Controller ?? current.Controls with { Launcher = setup.Launcher ?? current.Controls.Launcher } };
+        next.Validate(); return next;
+    }
+}

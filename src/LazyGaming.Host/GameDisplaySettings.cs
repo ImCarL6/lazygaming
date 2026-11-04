@@ -34,16 +34,16 @@ public static class GameDisplaySettings
         var original = File.ReadAllText(path);
         var backup = Path.Combine(directory, "wilds-display-before.ini");
         if (!File.Exists(backup)) File.WriteAllText(backup, original, new UTF8Encoding(false));
-        var updated = ConfigureWilds(original, display, source.Width, source.Height);
+        var updated = ConfigureWilds(original, display, source.Width, source.Height, Displays.Tv().Name);
         File.WriteAllText(path, updated, new UTF8Encoding(false));
     }
-    public static string ConfigureWilds(string original, string display, uint width, uint height)
+    public static string ConfigureWilds(string original, string display, uint width, uint height, string displayName = "SAMSUNG")
     {
         if (string.IsNullOrWhiteSpace(display) || width == 0 || height == 0)
             throw new InvalidOperationException("O destino de vídeo da TV não está disponível.");
         var values = new Dictionary<string, string>
         {
-            ["DeviceInstanceName"] = display, ["DisplayName"] = "SAMSUNG",
+            ["DeviceInstanceName"] = display, ["DisplayName"] = displayName,
             ["NormalWindowResolution"] = $"({width},{height})", ["WindowMode"] = "Borderless", ["FullScreenMode"] = "false"
         };
         return Regex.Replace(original, @"(?m)^(DeviceInstanceName|DisplayName|NormalWindowResolution|WindowMode|FullScreenMode)=([^\r\n]*)",

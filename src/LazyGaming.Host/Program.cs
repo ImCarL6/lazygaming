@@ -4,6 +4,13 @@ using System.Net.Sockets;
 using System.Text.Json;
 using LazyGaming;
 
+if (args.Contains("--package-version")) {
+    Console.WriteLine(typeof(PcPreferences).Assembly.GetName().Version!.ToString(3)); return;
+}
+if (args.Contains("--check-dependencies")) {
+    Console.WriteLine(JsonSerializer.Serialize(RuntimeDependencies.Inspect(),new JsonSerializerOptions(JsonSerializerDefaults.Web))); return;
+}
+
 // Deve preceder a primeira janela de feedback/WebView, inclusive em outras
 // threads. Evita virtualização de DPI ao levar o painel do monitor para a TV.
 System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
@@ -12,12 +19,14 @@ if (args.Contains("--open-launcher") || args.Contains("--open-hub"))
 {
     bool openHub = args.Contains("--open-hub");
     try {
-        var saved = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming", "pairing.json");
+        var localData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming");
+        var saved = Path.Combine(localData, "pc-command.json");
+        if (!File.Exists(saved)) saved = Path.Combine(localData,"pairing.json"); // Existing helper migration.
         using var stored = JsonDocument.Parse(File.ReadAllText(saved));
         var key = Convert.FromHexString(stored.RootElement.GetProperty("Key").GetString()!);
         var time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
         var nonce = Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        using var client = new HttpClient(new HttpClientHandler { UseProxy=false }) { Timeout = TimeSpan.FromSeconds(8) };
         var route = openHub ? "/api/hub/open" : "/api/launcher/toggle";
         using var request = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:47831" + route);
         request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
@@ -35,9 +44,9 @@ if (args.Contains("--open-launcher") || args.Contains("--open-hub"))
         // para tentar escapar da recusa de foco/autenticação.
         Console.Error.WriteLine("O auxiliar não conseguiu abrir o painel. Tente novamente.");
         Environment.ExitCode = 1; return;
-    } catch (Exception e) when (e is IOException or HttpRequestException or TaskCanceledException) { }
+    } catch (Exception e) when (e is IOException or HttpRequestException or TaskCanceledException or JsonException or FormatException or UnauthorizedAccessException) { }
     // Uma tentativa que expirou pode continuar no auxiliar; nunca duplicá-lo.
-    using (var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(2) }) {
+    if (!HostStartup.CanStart(47831)) using (var probe = new HttpClient(new HttpClientHandler { UseProxy=false }) { Timeout = TimeSpan.FromSeconds(2) }) {
         try {
             using var alive = await probe.GetAsync("http://127.0.0.1:47831/api/discover");
             Console.Error.WriteLine("O auxiliar já está aberto, mas não confirmou a abertura do painel. Tente novamente.");
@@ -48,7 +57,7 @@ if (args.Contains("--open-launcher") || args.Contains("--open-hub"))
             Environment.ExitCode = 1; return;
         }
     }
-    args = args.Concat(["--lan", openHub ? "--hub" : "--launcher"]).ToArray();
+    args = args.Concat([openHub ? "--hub" : "--launcher"]).ToArray();
 }
 if (args.Contains("--preview-feedback-on") || args.Contains("--preview-feedback-off"))
 {
@@ -112,6 +121,10 @@ if (args.Contains("--cache-art"))
 }
 if (args.Contains("--inspect-dualsense")) { await TouchpadMouse.Inspect(); return; }
 if (args.Contains("--inspect-displays")) { Console.WriteLine(JsonSerializer.Serialize(Displays.List())); return; }
+if(args.Contains("--inspect-launch-display")) {
+    var store=new PcPreferenceStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"LazyGaming"));
+    Displays.Preferences=()=>store.Current;Console.WriteLine(JsonSerializer.Serialize(LaunchDisplay.Current()));return;
+}
 if (args.Contains("--verify-displays") || args.Contains("--verify-extended-displays"))
 {
     bool extended = args.Contains("--verify-extended-displays");
@@ -163,22 +176,28 @@ if (args.Contains("--verify-displays") || args.Contains("--verify-extended-displ
     Console.WriteLine("RESTORED: " + JsonSerializer.Serialize(Displays.List().Where(d => d.Active))); return;
 }
 if (args.Contains("--inspect-audio")) { Console.WriteLine(JsonSerializer.Serialize(Audio.List())); return; }
+if (args.Contains("--inspect-volume")) { Console.WriteLine(JsonSerializer.Serialize(Audio.Volume())); return; }
 if (args.Contains("--verify-audio")) { Console.WriteLine(Audio.VerifyRoundTrip()); return; }
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders(); // Não registrar códigos, chaves, corpos ou URLs autenticadas.
 var preview = args.Contains("--preview-library");
 var test = args.Contains("--test") || preview;
-var lan = args.Contains("--lan") && !test;
 int port = int.TryParse(Environment.GetEnvironmentVariable("LAZYGAMING_PORT"), out var requested) ? requested : 47831;
+var data = test ? Path.Combine(Path.GetTempPath(), "lazygaming-test-" + port) : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming");
+using var instanceLease = HostInstanceLease.Acquire(data);
+var pcPreferences = new PcPreferenceStore(data);
+var lan = (args.Contains("--lan") || pcPreferences.Current.TvIntegrationEnabled) && !test;
 var addresses = NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up)
     .SelectMany(n => n.GetIPProperties().UnicastAddresses).Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
     .ToArray();
-var lanAddresses = addresses.Where(a => a.Address.ToString().StartsWith("192.168.")).ToArray();
+var lanAddresses = addresses.Where(a => PrivateNetwork.IsLocal(a.Address)).DistinctBy(a => a.Address).ToArray();
 builder.WebHost.ConfigureKestrel(k => { k.Limits.MaxRequestBodySize = 8192; k.Listen(IPAddress.Loopback, port);
     if (lan) foreach (var a in lanAddresses) k.Listen(a.Address, port); });
-var data = test ? Path.Combine(Path.GetTempPath(), "lazygaming-test-" + port) : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LazyGaming");
 var security = new Security(data);
+var localCommands = new LocalCommands(data);
+Displays.Preferences = () => pcPreferences.Current;
 var hubSession = new HubSession();
+var reopenAvailable = !test && DesktopReopen.Register();
 var pairingRecovery = new PairingRecovery(data);
 var library = new GameLibrary(data, test && !preview);
 var artwork = new ArtworkStore(library);
@@ -202,7 +221,9 @@ var launcher = new LauncherState();
 var controllerKeys = new ControllerKeys();
 var games = new GameService(library, platform, environment);
 using var feedback = test ? null : new ControllerFeedback();
-var touchpad = new TouchpadMouse(() => !test && environment.Active, value => feedback?.Notify(value), () => { _ = Task.Run(async () => { try { await desktop.Toggle(); } catch (InvalidOperationException e) { feedback?.NotifyMessage(e.Message); } catch { feedback?.NotifyMessage("Não foi possível abrir o painel. Tente novamente."); } }); }, () => desktop.AcceptsControllerInput, controllerKeys.Push);
+var dependencyNotices = new NoticePolicy();
+var controllerDiagnosticGate = new object();
+var touchpad = new TouchpadMouse(() => !test && (environment.Active || desktop.AcceptsControllerInput), value => feedback?.Notify(value), () => { _ = Task.Run(async () => { try { await OpenConfiguredLauncher(); } catch (InvalidOperationException e) { feedback?.NotifyMessage(e.Message); } catch { feedback?.NotifyMessage("Não foi possível abrir o painel. Tente novamente."); } }); }, () => desktop.AcceptsControllerInput, controllerKeys.Push, preferences: () => pcPreferences.Current, diagnostic: ControllerDiagnostic);
 desktop.ControllerReleased = () => test || touchpad.Released;
 desktop.ResetInput = () => { controllerKeys.Clear(); touchpad.ResetNavigation(); };
 desktop.FocusIssue = message => feedback?.NotifyMessage(message);
@@ -235,7 +256,9 @@ app.Use(async (ctx, next) =>
             (ctx.Request.Path.StartsWithSegments("/api/hub") || ctx.Request.Path.StartsWithSegments("/api/games") && ctx.Request.Path.Value!.EndsWith("/settings") || ctx.Request.Path == "/api/status" || ctx.Request.Path == "/api/audio" || ctx.Request.Path == "/api/displays") &&
             (ctx.Request.Method == "GET" || ctx.Request.Headers.Origin == $"http://127.0.0.1:{port}");
         if (ctx.Request.Path.StartsWithSegments("/api/hub") && !IPAddress.IsLoopback(remote)) { ctx.Response.StatusCode = 403; return; }
-        if (!desktopAuth && !hubAuth && !security.Verify(ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, body,
+        bool localCommandAuth = IPAddress.IsLoopback(remote) && localCommands.Verify(ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, body,
+            ctx.Request.Headers["X-LG-Time"].ToString(), ctx.Request.Headers["X-LG-Nonce"].ToString(), ctx.Request.Headers["X-LG-Signature"].ToString());
+        if (!desktopAuth && !hubAuth && !localCommandAuth && !security.Verify(ctx.Request.Method, ctx.Request.Path + ctx.Request.QueryString, body,
             ctx.Request.Headers["X-LG-Time"].ToString(), ctx.Request.Headers["X-LG-Nonce"].ToString(), ctx.Request.Headers["X-LG-Signature"].ToString()))
         { ctx.Response.StatusCode = 401; await ctx.Response.WriteAsJsonAsync(new { error = "Pareamento necessário ou comando expirado." }); return; }
     }
@@ -289,7 +312,8 @@ app.MapPost("/api/launcher/selection", (HttpContext ctx) => {
 });
 app.MapPost("/api/launcher/toggle", async (HttpContext ctx) => {
     if (!IPAddress.IsLoopback(ctx.Connection.RemoteIpAddress!)) return Results.StatusCode(403);
-    await desktop.Toggle(); return Results.Ok(new { accepted = true });
+    await OpenConfiguredLauncher();
+    return Results.Ok(new { accepted = true });
 });
 app.MapPost("/api/launcher/hide", async (HttpContext ctx) => {
     if (!IPAddress.IsLoopback(ctx.Connection.RemoteIpAddress!)) return Results.StatusCode(403);
@@ -321,7 +345,8 @@ app.MapPost("/api/local-pairing", (HttpContext ctx) =>
     return Results.Ok(new { code = security.Renew(), expiresIn = 300, addresses = lanAddresses.Select(a => $"http://{a.Address}:{port}") });
 });
 app.MapGet("/api/status", async (HttpContext ctx) => new { state = await games.StatusAsync(ctx.RequestAborted), artwork = library.Games.ToDictionary(g => g.Id, g => new { cover = artwork.Url(g, "cover"), backdrop = artwork.Url(g, "backdrop"), icon = artwork.Url(g, "icon") }), controller = touchpad.Status, launcher = new { visible = desktop.Visible, focused = desktop.Focused, placement = desktop.Placement, discovery = desktop.Discovery, input = controllerKeys.Status, ack = controllerAck }, displays = environment.DisplayControls, simulation = test, preview,
-    simulatedLaunches = (platform as SimulatedGames)?.LaunchCount });
+    simulatedLaunches = (platform as SimulatedGames)?.LaunchCount, enabled = pcPreferences.Current.Enabled,
+    version = typeof(PcPreferences).Assembly.GetName().Version!.ToString(3) });
 app.MapGet("/api/presentation", async () => new { cable = test ? new CableAvailability(true, false, null) : Presentation.InspectCable(), stream = await StreamStatus() });
 app.MapGet("/api/presentation/cable", () => test ? new CableAvailability(true, false, null) : Presentation.InspectCable());
 app.MapGet("/api/stream/status", StreamStatus);
@@ -389,8 +414,114 @@ app.MapPost("/api/tv", (HttpContext ctx) =>
 });
 app.MapGet("/api/tv", () => Results.Ok(tvReport));
 async Task EnrichLibrary(bool retryMissing = false) { await library.Metadata.EnsureAll(library.Games, retryMissing); await artwork.EnsureAll(); }
-var pcHub = new PcHub(library, games, () => EnrichLibrary(true));
+var pcHub = new PcHub(library, games, () => EnrichLibrary(true), () => pcPreferences.Current.Enabled);
 pcHub.Map(app, artwork, hubSession, port);
+async Task QuitHelper() {
+    await games.Rescan(() => {
+        if (environment.Active) throw new InvalidOperationException("Aguarde o fim da sessão antes de fechar o auxiliar.");
+        app.Lifetime.StopApplication();
+    });
+}
+void SetActivity(bool enabled) { pcPreferences.SetEnabled(enabled); controllerKeys.Clear(); touchpad.ResetNavigation(); }
+void RequireActivity() {
+    if (!pcPreferences.Current.Enabled) throw new InvalidOperationException("LazyGaming pausado. Ative pelo ícone na área de notificação ou pela Central do PC.");
+    if(touchpad.Capture.Active(Environment.TickCount64))throw new InvalidOperationException("Conclua ou cancele a gravação do atalho.");
+}
+void OpenHub() {
+    if (test) return;
+    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo($"http://127.0.0.1:{port}/hub.html#" + hubSession.Issue()) { UseShellExecute = true }); }
+    catch { feedback?.NotifyMessage("Não foi possível abrir a Central do PC."); }
+}
+async Task OpenConfiguredLauncher() {
+    if (!pcPreferences.Current.SetupCompleted) { OpenHub(); return; }
+    var dependencies = RuntimeDependencies.Inspect();
+    if (!dependencies.WebView2Available) {
+        if (dependencyNotices.Accept("webview-unavailable",Environment.TickCount64)) {
+            feedback?.NotifyMessage(dependencies.Note!); OpenHub();
+        }
+        return;
+    }
+    await desktop.Toggle();
+}
+using var tray = test ? null : new PcTray(() => pcPreferences.Current.Enabled, SetActivity,
+    async () => { RequireActivity(); await OpenConfiguredLauncher(); }, OpenHub, QuitHelper);
+app.MapGet("/api/hub/dependencies", () => Results.Ok(RuntimeDependencies.Inspect()));
+app.MapPost("/api/hub/quit", async () => {
+    await QuitHelper();
+    return Results.Ok(new { accepted = true });
+});
+app.MapGet("/api/hub/activity", () => Results.Ok(new { enabled = pcPreferences.Current.Enabled }));
+app.MapPost("/api/hub/activity", (HttpContext ctx) => {
+    using var json = JsonDocument.Parse((string)ctx.Items["body"]!);
+    if (!json.RootElement.TryGetProperty("enabled",out var enabled) || enabled.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        return Results.BadRequest(new { error = "Escolha ativar ou pausar." });
+    SetActivity(enabled.GetBoolean()); return Results.Ok(new { enabled = pcPreferences.Current.Enabled });
+});
+app.MapGet("/api/hub/pc-settings", () => Results.Ok(new {
+    preferences = pcPreferences.Current,
+    controllerOptions = PcSetup.Effective(pcPreferences.Current,touchpad.Detection), reopenAvailable,
+    screens = test ? new List<Displays.Screen>() : Displays.List(),
+    audio = test ? new List<AudioDevice>() : Audio.List(),
+    controller = touchpad.Detection,
+    tvSetup = new { lanEnabled = lan, commandLineLan = args.Contains("--lan"), paired = security.Paired,
+        addresses = lan ? lanAddresses.Select(a => $"http://{a.Address}:{port}").ToArray() : [] }
+}));
+app.MapGet("/api/hub/controller", () => Results.Ok(new {
+    controller=touchpad.Detection,
+    controllerOptions=PcSetup.Effective(pcPreferences.Current,touchpad.Detection),
+    defaultControllerOptions=PcSetup.Defaults(touchpad.Detection,pcPreferences.Current.ControllerSource)
+}));
+app.MapPost("/api/hub/pc-settings", async (HttpContext ctx) => {
+    var value = JsonSerializer.Deserialize<PcPreferences>((string)ctx.Items["body"]!, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+        ?? throw new InvalidOperationException("Configuração vazia.");
+    value.Validate();
+    await pcHub.Index(() => {
+        if (environment.Active) throw new InvalidOperationException("Encerre a sessão antes de alterar a configuração do PC.");
+        if (!test && !string.IsNullOrEmpty(value.DisplayPath) && !Displays.List().Any(s => s.Available && s.DevicePath == value.DisplayPath))
+            throw new InvalidOperationException("A tela escolhida está desconectada.");
+        if (!test && value.AudioDeviceId is { Length: > 0 } and not "keep" && !Audio.List().Any(d => d.Id == value.AudioDeviceId))
+            throw new InvalidOperationException("A saída de áudio está desconectada.");
+        pcPreferences.Save(value with { Enabled = pcPreferences.Current.Enabled, SetupCompleted = pcPreferences.Current.SetupCompleted,
+            SamsungHintDismissed = pcPreferences.Current.SamsungHintDismissed });
+    });
+    return Results.Ok(pcPreferences.Current);
+});
+List<Displays.Screen> SetupScreens() => test ? [new("Tela de teste","test-display",5,true,true,1920,1080,60)] : Displays.List();
+List<AudioDevice> SetupAudio() => test ? [] : Audio.List();
+object SetupSnapshot() {
+    var screens = SetupScreens(); var preferences = pcPreferences.Current;
+    return new { preferences, screens, audio = SetupAudio(), controller = touchpad.Detection,
+        controllerOptions = PcSetup.Effective(preferences,touchpad.Detection), reopenAvailable,
+        defaultControllerOptions = PcSetup.Defaults(touchpad.Detection,preferences.ControllerSource),
+        displayPath = preferences.DisplayPath ?? Displays.SelectTarget(screens)?.DevicePath,
+        onlyGameDisplay = !environment.DisplayControls.MonitorsEnabled,
+        samsungHint = PcSetup.SuggestSamsung(screens,preferences,security.Paired) };
+}
+app.MapGet("/api/hub/setup", () => Results.Ok(SetupSnapshot()));
+app.MapPost("/api/hub/controller-capture", async () => {
+    await games.Rescan(() => {
+        if(environment.Active || !pcPreferences.Current.Enabled)throw new InvalidOperationException("Encerre a sessão e ative o LazyGaming para gravar.");
+        touchpad.Capture.Begin(Environment.TickCount64);
+    });
+    return Results.Ok(touchpad.Capture.State(Environment.TickCount64));
+});
+app.MapGet("/api/hub/controller-capture", () => Results.Ok(touchpad.Capture.State(Environment.TickCount64)));
+app.MapPost("/api/hub/controller-capture/cancel", () => { touchpad.Capture.Cancel();return Results.Ok(new { accepted=true }); });
+app.MapPost("/api/hub/setup", async (HttpContext ctx) => {
+    var setup = JsonSerializer.Deserialize<InitialPcSetup>((string)ctx.Items["body"]!,new JsonSerializerOptions(JsonSerializerDefaults.Web))
+        ?? throw new InvalidOperationException("Confira a configuração inicial.");
+    await pcHub.Index(() => {
+        if (environment.Active) throw new InvalidOperationException("Encerre a sessão antes de configurar.");
+        var value = PcSetup.Complete(pcPreferences.Current,setup,SetupScreens(),SetupAudio());
+        environment.SetMonitors(!setup.OnlyGameDisplay);
+        pcPreferences.Save(value);
+    });
+    return Results.Ok(SetupSnapshot());
+});
+app.MapPost("/api/hub/samsung-hint/dismiss", () => {
+    pcPreferences.Save(pcPreferences.Current with { SamsungHintDismissed = true });
+    return Results.Ok(new { accepted = true });
+});
 app.MapPost("/api/library/refresh", async () => { await games.Rescan(); if (!test || preview) _ = EnrichLibrary(true); return Results.Ok(new { count = library.Games.Count }); });
 app.MapGet("/api/library/search", async (string query) => Results.Ok(await library.Metadata.Search(query)));
 app.MapGet("/api/games/{id}/settings", (string id) => {
@@ -425,11 +556,13 @@ app.MapPost("/api/games/{id}/focus", async (string id, HttpContext ctx) => {
     return Results.Ok(new { focused });
 });
 app.MapPost("/api/games/{id}/move-to-tv", async (string id, HttpContext ctx) => {
+    RequireActivity();
     if (preview) return Results.Conflict(new { error = "A prévia não move jogos reais." });
     await games.MoveToTv(id, ctx.RequestAborted);
     return Results.Ok(new { moved = true });
 });
 app.MapPost("/api/games/{id}/start", async (string id, HttpContext ctx) => { if (preview) return Results.Conflict(new { error = "A prévia não inicia jogos." });
+    RequireActivity();
     using var body = JsonDocument.Parse((string)ctx.Items["body"]!);
     var mode = body.RootElement.TryGetProperty("mode", out var selectedMode) ? selectedMode.GetString() ?? "" : "cable";
     Presentation.Validate(mode, mode == "stream" && (await StreamStatus()).Available);
@@ -445,12 +578,14 @@ app.MapPost("/api/games/{id}/stop", async (string id, HttpContext ctx) =>
     if (force && (!body.RootElement.TryGetProperty("confirm", out var c) || c.GetString() != "LOSE_UNSAVED_PROGRESS"))
         return Results.BadRequest(new { error = "Confirme a possível perda de progresso não salvo." });
     var nextGame = body.RootElement.TryGetProperty("nextGame", out var next) ? next.GetString() : null;
+    if (nextGame != null) RequireActivity();
     var nextMode = body.RootElement.TryGetProperty("mode", out var transport) ? transport.GetString() : null;
     await games.Stop(id, force, nextGame, nextMode); return Results.Ok(new { accepted = true });
 });
 app.MapGet("/api/audio", () => test ? new List<AudioDevice>() : Audio.List());
 app.MapGet("/api/displays", () => environment.DisplayControls);
 app.MapPost("/api/displays", async (HttpContext ctx) => {
+    RequireActivity();
     using var body = JsonDocument.Parse((string)ctx.Items["body"]!);
     if (!body.RootElement.TryGetProperty("monitorsEnabled", out var enabled) || enabled.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
         return Results.BadRequest(new { error = "Escolha ligar ou desligar os monitores." });
@@ -464,21 +599,56 @@ app.MapPost("/api/audio", (HttpContext ctx) =>
     environment.ManualAudio(body.RootElement.GetProperty("id").GetString()!);
     return Results.Ok(new { accepted = true });
 });
+var simulatedVolume = new VolumeState(50, false, "Saída simulada");
+app.MapGet("/api/volume", () => test ? simulatedVolume : Audio.Volume());
+app.MapPost("/api/volume", (HttpContext ctx) =>
+{
+    using var body = JsonDocument.Parse((string)ctx.Items["body"]!);
+    var current = test ? simulatedVolume : Audio.Volume();
+    int level;
+    if (body.RootElement.TryGetProperty("level", out var requested) && requested.TryGetInt32(out var absolute)) level = absolute;
+    else if (body.RootElement.TryGetProperty("direction", out var direction) && direction.TryGetInt32(out var step) && step != 0) level = Audio.StepVolume(current.Level, step);
+    else return Results.BadRequest(new { error = "Informe o volume desejado." });
+    level = Math.Clamp(level, 0, 100);
+    if (test) return Results.Ok(simulatedVolume = simulatedVolume with { Level = level, Muted = level == 0 && simulatedVolume.Muted });
+    return Results.Ok(Audio.SetVolume(level));
+});
 Console.WriteLine($"LazyGaming: http://127.0.0.1:{port} ({(test ? "SIMULAÇÃO" : lan ? "rede local" : "somente PC")})");
 Console.WriteLine("Pareie pela página aberta no PC. Ctrl+C encerra o auxiliar; jogos permanecem abertos.");
-if (!test) _ = touchpad.Run(app.Lifetime.ApplicationStopping);
+// Vigia: a leitura do controle nunca fica parada até reiniciar o auxiliar.
+if (!test) _ = Task.Run(async () => {
+    var stopping = app.Lifetime.ApplicationStopping;
+    while (!stopping.IsCancellationRequested) {
+        try { await touchpad.Run(stopping); }
+        catch (Exception e) when (!stopping.IsCancellationRequested) { ControllerDiagnostic("read-task-fault", e); }
+        if (stopping.IsCancellationRequested) break;
+        ControllerDiagnostic("read-task-restart", null);
+        try { await Task.Delay(1000, stopping); } catch (OperationCanceledException) { break; }
+    }
+});
+// Diagnóstico local do controle: só tipo/mensagem/primeiro quadro, sem relatórios, chaves ou caminhos de usuário.
+void ControllerDiagnostic(string kind, Exception? error) {
+    try {
+        var file = Path.Combine(data, "controller-diagnostics.jsonl");
+        lock (controllerDiagnosticGate) {
+            if (File.Exists(file) && new FileInfo(file).Length > 256 * 1024) File.Move(file, file + ".old", true);
+            var frame = error?.StackTrace?.Split('\n').FirstOrDefault()?.Trim();
+            File.AppendAllText(file, JsonSerializer.Serialize(new { at = DateTime.UtcNow, kind, version = typeof(Program).Assembly.GetName().Version?.ToString(3), error = error?.GetType().FullName, message = error?.Message, frame }) + "\n");
+        }
+    } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+}
 if (!test || preview) _ = EnrichLibrary();
 _ = pcHub.Automatic(app.Lifetime.ApplicationStopping);
 _ = Task.Run(async () =>
 {
     while (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
     {
-        try { await games.Tick(); await background.Tick(); } catch { /* Estado desconhecido nunca encerra ou troca processos. */ }
+        try { await games.Tick(pcPreferences.Current.Enabled); await background.Tick(); } catch { /* Estado desconhecido nunca encerra ou troca processos. */ }
         await Task.Delay(750);
     }
 });
-if (args.Contains("--launcher")) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(async () => { try { await desktop.Toggle(); } catch { } }); });
-if (args.Contains("--hub")) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(() => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo($"http://127.0.0.1:{port}/hub.html#" + hubSession.Issue()) { UseShellExecute = true })); });
+if (!test && (!pcPreferences.Current.SetupCompleted || args.Contains("--hub"))) app.Lifetime.ApplicationStarted.Register(OpenHub);
+else if (args.Contains("--launcher")) app.Lifetime.ApplicationStarted.Register(() => { _ = Task.Run(async () => { try { await OpenConfiguredLauncher(); } catch { feedback?.NotifyMessage("Não foi possível abrir o launcher. Abra a Central pelo ícone do LazyGaming."); } }); });
 app.Lifetime.ApplicationStopping.Register(desktop.Close);
 app.Lifetime.ApplicationStopped.Register(() => (platform as IDisposable)?.Dispose());
 await app.RunAsync();

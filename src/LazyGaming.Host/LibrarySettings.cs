@@ -46,7 +46,8 @@ public record LibraryPreferences(LibraryFolder[] Folders, bool Steam = true, boo
 public sealed class LibrarySettings(string directory)
 {
     string FilePath => Path.Combine(directory, "library", "settings.json");
-    public LibraryPreferences Read() => LibraryJson.Read(FilePath, () => new LibraryPreferences([new(@"C:\Joguetes")]));
+    public LibraryPreferences Read() => LibraryJson.Read(FilePath, () => new LibraryPreferences(
+        Directory.Exists(@"C:\Joguetes") ? [new(@"C:\Joguetes")] : []));
     public void Save(LibraryPreferences preferences) {
         if (preferences.Folders == null || preferences.Folders.Length > 32 || preferences.IntervalMinutes is not (1 or 5 or 15 or 30)
             || (preferences.Excluded?.Length ?? 0) > 1000) throw new InvalidOperationException("Configuração de busca inválida.");

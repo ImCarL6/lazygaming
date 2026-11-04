@@ -13,7 +13,8 @@ public static class DualSenseReport
         if (!full && !usb && !basic) return false;
         int stick = full ? 2 : 1, buttons = full ? 9 : usb ? 8 : 5, triggers = full ? 6 : usb ? 5 : 8;
         for (int i = stick; i < stick + 4; i++) if (Math.Abs(report[i] - 128) > 20) return false;
-        return report[buttons] == 8 && report[buttons + 1] == 0 && (report[buttons + 2] & 7) == 0 && report[triggers] <= 12 && report[triggers + 1] <= 12;
+        // Simple Bluetooth packs its report counter into bits 2–7, not microphone.
+        return report[buttons] == 8 && report[buttons + 1] == 0 && (report[buttons + 2] & (basic ? 3 : 7)) == 0 && report[triggers] <= 12 && report[triggers + 1] <= 12;
     }
     public static bool? MicrophonePressed(ReadOnlySpan<byte> report)
     {
@@ -51,13 +52,14 @@ public sealed class HoldToggle
 {
     long? began;
     bool fired;
+    public const int HoldMs = 1500;
     public bool Holding => began.HasValue;
     public void Reset() { began = null; fired = false; }
     public bool Update(bool pressed, long now)
     {
         if (!pressed) { Reset(); return false; }
         began ??= now;
-        if (!fired && now - began.Value >= 1500) { fired = true; return true; }
+        if (!fired && now - began.Value >= HoldMs) { fired = true; return true; }
         return false;
     }
 }

@@ -1,4 +1,4 @@
-﻿param([string]$OutputDirectory)
+﻿param([string]$OutputDirectory, [switch]$SelfContained, [string]$RuntimeIdentifier = 'win-x64')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $projectRoot 'outputs/pc-package' }
@@ -10,10 +10,12 @@ foreach ($required in @('moonlight-wasm.js','moonlight-wasm.js.mem','moonlight-w
 }
 Push-Location $projectRoot
 try {
-    dotnet publish src/LazyGaming.Host -c Release --self-contained false -o $target -m:1 -p:UseSharedCompilation=false
+    $publishArgs = @('publish', 'src/LazyGaming.Host', '-c', 'Release', '--self-contained', $SelfContained.IsPresent.ToString().ToLowerInvariant(), '-o', $target, '-m:1', '-p:UseSharedCompilation=false')
+    if ($SelfContained) { $publishArgs += @('-r', $RuntimeIdentifier) }
+    dotnet @publishArgs
     if ($LASTEXITCODE -ne 0) { throw 'Falha ao publicar o PC.' }
     Copy-Item -LiteralPath LICENSE,THIRD_PARTY.md -Destination $target
-    Set-Content -LiteralPath (Join-Path $target 'Abrir-LazyGaming.cmd') -Encoding Ascii -Value '@echo off', 'start "" "%~dp0LazyGaming.Host.exe" --open-launcher'
-    Set-Content -LiteralPath (Join-Path $target 'Central-LazyGaming.cmd') -Encoding Ascii -Value '@echo off', 'start "" "%~dp0LazyGaming.Host.exe" --open-hub'
+    Set-Content -LiteralPath (Join-Path $target 'Abrir-LazyGaming.cmd') -Encoding Ascii -Value '@echo off', 'set "LAZYGAMING_APP=%~dp0LazyGaming.Host.exe"', 'powershell -NoProfile -Command "Start-Process -FilePath $env:LAZYGAMING_APP -ArgumentList ''--open-launcher'' -WindowStyle Hidden"'
+    Set-Content -LiteralPath (Join-Path $target 'Central-LazyGaming.cmd') -Encoding Ascii -Value '@echo off', 'set "LAZYGAMING_APP=%~dp0LazyGaming.Host.exe"', 'powershell -NoProfile -Command "Start-Process -FilePath $env:LAZYGAMING_APP -ArgumentList ''--open-hub'' -WindowStyle Hidden"'
     Write-Output "Executável preparado: $target"
 } finally { Pop-Location }

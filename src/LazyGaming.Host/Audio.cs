@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 namespace LazyGaming;
 
 public record AudioDevice(string Id, string Name, bool Current);
+public record VolumeState(int Level, bool Muted, string Device);
 
 public static class Audio
 {
@@ -109,6 +110,63 @@ public static class Audio
         var policy = (IPolicyConfig)new PolicyConfig();
         try { for (var role = 0; role < 3; role++) Marshal.ThrowExceptionForHR(policy.SetDefaultEndpoint(id, role)); }
         finally { Marshal.ReleaseComObject(policy); }
+    }
+    // Volume mestre da saída padrão atual (onde o jogo toca), em passos de 5.
+    public static VolumeState Volume() => WithEndpointVolume((volume, name) => {
+        Marshal.ThrowExceptionForHR(volume.GetMasterVolumeLevelScalar(out var level));
+        Marshal.ThrowExceptionForHR(volume.GetMute(out var muted));
+        return new VolumeState((int)Math.Round(level * 100), muted, name);
+    });
+    public static VolumeState SetVolume(int level)
+    {
+        level = Math.Clamp(level, 0, 100);
+        return WithEndpointVolume((volume, name) => {
+            var context = Guid.Empty;
+            Marshal.ThrowExceptionForHR(volume.SetMasterVolumeLevelScalar(level / 100f, ref context));
+            if (level > 0) Marshal.ThrowExceptionForHR(volume.SetMute(false, ref context));
+            Marshal.ThrowExceptionForHR(volume.GetMasterVolumeLevelScalar(out var applied));
+            Marshal.ThrowExceptionForHR(volume.GetMute(out var muted));
+            return new VolumeState((int)Math.Round(applied * 100), muted, name);
+        });
+    }
+    public static int StepVolume(int current, int direction) => Math.Clamp(direction > 0 ? current / 5 * 5 + 5 : (current + 4) / 5 * 5 - 5, 0, 100);
+    static T WithEndpointVolume<T>(Func<IAudioEndpointVolume, string, T> action)
+    {
+        var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+        try
+        {
+            if (enumerator.GetDefaultAudioEndpoint(0, 1, out var device) != 0) throw new InvalidOperationException("Nenhuma saída de áudio ativa no Windows.");
+            try
+            {
+                Marshal.ThrowExceptionForHR(device.GetId(out var id));
+                var name = List().FirstOrDefault(d => d.Id == id)?.Name ?? "Saída de áudio";
+                var iid = typeof(IAudioEndpointVolume).GUID;
+                Marshal.ThrowExceptionForHR(device.Activate(ref iid, 23, 0, out var pointer));
+                var volume = (IAudioEndpointVolume)Marshal.GetObjectForIUnknown(pointer);
+                Marshal.Release(pointer);
+                try { return action(volume, name); }
+                finally { Marshal.ReleaseComObject(volume); }
+            }
+            finally { Marshal.ReleaseComObject(device); }
+        }
+        finally { Marshal.ReleaseComObject(enumerator); }
+    }
+    [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioEndpointVolume
+    {
+        [PreserveSig] int RegisterControlChangeNotify(nint notify);
+        [PreserveSig] int UnregisterControlChangeNotify(nint notify);
+        [PreserveSig] int GetChannelCount(out uint count);
+        [PreserveSig] int SetMasterVolumeLevel(float level, ref Guid context);
+        [PreserveSig] int SetMasterVolumeLevelScalar(float level, ref Guid context);
+        [PreserveSig] int GetMasterVolumeLevel(out float level);
+        [PreserveSig] int GetMasterVolumeLevelScalar(out float level);
+        [PreserveSig] int SetChannelVolumeLevel(uint channel, float level, ref Guid context);
+        [PreserveSig] int SetChannelVolumeLevelScalar(uint channel, float level, ref Guid context);
+        [PreserveSig] int GetChannelVolumeLevel(uint channel, out float level);
+        [PreserveSig] int GetChannelVolumeLevelScalar(uint channel, out float level);
+        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid context);
+        [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
     }
     [DllImport("ole32.dll")] static extern int PropVariantClear(ref PropVariant value);
     [StructLayout(LayoutKind.Sequential)] struct PropertyKey { public Guid Format; public uint Id; }
