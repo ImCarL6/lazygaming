@@ -76,7 +76,13 @@ EmulatorLibraryTests.Run();
     Console.WriteLine($"PASS: mixer do Windows lido ({seen.Count} sessões de áudio, nenhuma alterada).");
     // Escrita real num processo de teste que toca um som; o volume original desse app no mixer é restaurado.
     var wav = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Media", "Windows Ding.wav");
-    if (File.Exists(wav)) {
+    var outputs = Audio.List();
+    Console.WriteLine($"INFO: {outputs.Count} saídas de áudio ativas, saída padrão: {outputs.Any(output => output.Current)}.");
+    if (outputs.Count == 0) {
+        Assert(any == null && seen.Count == 0, "sem saída ativa não há sessões de reprodução");
+        Assert(Audio.SetSessionVolume(_ => true, 35) == null, "sem saída ativa ajustar volume retorna indisponível");
+        Console.WriteLine("PASS: ausência de saída de áudio tratada sem erro. Teste físico de volume indisponível neste sistema.");
+    } else if (File.Exists(wav)) {
         var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe", "-NoProfile -Command \"$p = New-Object Media.SoundPlayer '" + wav + "'; for ($i = 0; $i -lt 12; $i++) { $p.PlaySync() }\"") { CreateNoWindow = true, UseShellExecute = false };
         using var player = System.Diagnostics.Process.Start(psi)!;
         try {
