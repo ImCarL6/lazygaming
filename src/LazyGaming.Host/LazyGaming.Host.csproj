@@ -4,7 +4,7 @@
     <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.24.0</Version>
+    <Version>0.24.1</Version>
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
