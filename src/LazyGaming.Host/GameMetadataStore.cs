@@ -9,7 +9,8 @@ namespace LazyGaming;
 public record CatalogMatch(string Id, string Name, string? Image = null);
 public record LocalArtwork(string Cover, string Backdrop, string CoverSourceUrl, string BackdropSourceUrl);
 public record GameMetadata(string? StoreId, string Title, int? Year, string[] Developers, string[] Genres, string SourceUrl, DateTime CheckedAt,
-    string Source = "steam", string? Description = null, string? Language = null, LocalArtwork? Artwork = null);
+    string Source = "steam", string? Description = null, string? Language = null, LocalArtwork? Artwork = null,
+    string[]? Platforms = null, string[]? Publishers = null, string? CatalogId = null);
 public record GameCustomization(string? Name = null, GameMetadata? Metadata = null, bool Manual = false, DateTime AttemptedAt = default);
 
 // Identidade pública e apresentação nunca autorizam abrir/fechar um processo.

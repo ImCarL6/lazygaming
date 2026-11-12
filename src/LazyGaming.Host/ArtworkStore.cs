@@ -11,19 +11,22 @@ public sealed class ArtworkStore(GameLibrary library, HttpClient? client = null)
     readonly HttpClient http = client ?? new() { Timeout = TimeSpan.FromSeconds(10) };
     readonly SemaphoreSlim downloads = new(2, 2);
     readonly SemaphoreSlim refresh = new(1, 1);
+    public WallpaperOverrides Wallpapers { get; } = new(library.Directory);
     public string Root => Path.Combine(library.Directory, "library", "art");
     public string? FileFor(string id, string kind)
     {
         if (!System.Text.RegularExpressions.Regex.IsMatch(id, "^[a-zA-Z0-9-]{1,80}$")) return null;
         if (!library.Games.Any(g => library.Metadata.ArtworkId(g) == id || g.Id == id) || kind is not ("cover" or "backdrop" or "icon")) return null;
+        if (kind == "backdrop" && Wallpapers.Image(id) is { } custom) return custom;
         var path = Path.Combine(Root, id, kind + ".jpg"); return File.Exists(path) ? path : null;
     }
     public string? Url(Game game, string kind)
     {
-        var id = kind == "icon" ? game.Id : library.Metadata.ArtworkId(game);
+        var custom = kind == "backdrop" ? Wallpapers.Image(game.Id) : null;
+        var id = kind == "icon" || custom != null ? game.Id : library.Metadata.ArtworkId(game);
         if (id == null) return null;
         var file = FileFor(id, kind);
-        return file == null ? null : $"/art/{id}/{kind}.jpg?v={File.GetLastWriteTimeUtc(file).Ticks}";
+        return file == null ? null : $"/art/{id}/{kind}.jpg?v={(custom != null ? "custom-" : "")}{File.GetLastWriteTimeUtc(file).Ticks}";
     }
     public async Task EnsureAll()
     {
@@ -41,6 +44,12 @@ public sealed class ArtworkStore(GameLibrary library, HttpClient? client = null)
             } catch (Exception e) { RuntimeDiagnostics.Report("artwork", "prepare-failed", e); }
             finally { downloads.Release(); }
         })); } finally { refresh.Release(); }
+    }
+    public async Task EnsureImported(Game game)
+    {
+        await refresh.WaitAsync();
+        try { EnsureIcon(game); if (library.Metadata.For(game)?.Source == "local") EnsureLocal(game); }
+        finally { refresh.Release(); }
     }
     void EnsureLocal(Game game)
     {
@@ -190,12 +199,13 @@ public sealed class ArtworkStore(GameLibrary library, HttpClient? client = null)
         if (File.Exists(cover) && File.Exists(backdrop)) File.WriteAllText(stamp, sourceKey);
     }
     public static void OptimizeLocal(Stream input, string output, string kind) => Optimize(input, output, kind, true);
+    public static void OptimizeWallpaper(Stream input, string output, bool thumbnail = false) => Optimize(input, output, thumbnail ? "wallpaper-thumbnail" : "wallpaper", true);
     static void Optimize(Stream input, string output, string kind, bool local = false)
     {
         using var image = Image.FromStream(input);
-        if (!Useful(image)) throw new InvalidDataException("Placeholder de arte sem conteúdo.");
         if ((long)image.Width * image.Height > 50_000_000) throw new InvalidDataException();
-        double scale = kind == "icon" ? Math.Min(1, 256.0 / Math.Max(image.Width, image.Height)) : kind == "cover" ? Math.Min(1, Math.Min((local ? 480.0 : 600.0) / image.Width, (local ? 720.0 : 900.0) / image.Height)) : Math.Min(1, Math.Min((local ? 1600.0 : 2560.0) / image.Width, (local ? 900.0 : 1440.0) / image.Height));
+        if (!Useful(image)) throw new InvalidDataException("Placeholder de arte sem conteúdo.");
+        double scale = kind == "wallpaper" ? Math.Min(1, Math.Min(3840.0 / image.Width, 2160.0 / image.Height)) : kind == "wallpaper-thumbnail" ? Math.Min(1, Math.Min(600.0 / image.Width, 338.0 / image.Height)) : kind == "icon" ? Math.Min(1, 256.0 / Math.Max(image.Width, image.Height)) : kind == "cover" ? Math.Min(1, Math.Min((local ? 480.0 : 600.0) / image.Width, (local ? 720.0 : 900.0) / image.Height)) : Math.Min(1, Math.Min((local ? 1600.0 : 2560.0) / image.Width, (local ? 900.0 : 1440.0) / image.Height));
         using var bitmap = new Bitmap(Math.Max(1, (int)(image.Width * scale)), Math.Max(1, (int)(image.Height * scale)), PixelFormat.Format24bppRgb);
         using (var graphics = Graphics.FromImage(bitmap))
         { graphics.Clear(Color.Black); graphics.InterpolationMode = InterpolationMode.HighQualityBicubic; graphics.DrawImage(image, 0, 0, bitmap.Width, bitmap.Height); }

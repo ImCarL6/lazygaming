@@ -901,7 +901,8 @@ _ = Task.Run(async () =>
     }
 });
 // Instala/atualiza o app da TV sozinho quando todas as condições ficam verdadeiras (adesão, TV, Developer Mode, ferramentas, acesso).
-if (!test) _ = Task.Run(async () => {
+// Atualizações locais do PC podem adiar essa rotina só nesta execução, preservando a preferência salva.
+if (!test && !args.Contains("--skip-tv-auto-install")) _ = Task.Run(async () => {
     try { await Task.Delay(5000, app.Lifetime.ApplicationStopping); } catch (OperationCanceledException) { return; }
     while (!app.Lifetime.ApplicationStopping.IsCancellationRequested) {
         try { if (pcPreferences.Current.TvAutoInstall && !environment.Active) await CheckTv(false); } catch (OperationCanceledException) { break; } catch (Exception e) { RuntimeDiagnostics.Report("tv-install", "check-failed", e); }

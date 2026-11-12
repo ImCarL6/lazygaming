@@ -1,7 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Windows.Forms;
 
 namespace LazyGaming;
 
@@ -23,17 +22,18 @@ public sealed class HubSession
 public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enrich, Func<bool>? enabled = null)
 {
     readonly SemaphoreSlim scan = new(1, 1);
+    readonly LocalFilePicker picker = new();
     public bool Busy { get; private set; }
     public string? Notice { get; private set; }
     public DateTime? NextScan { get; private set; }
-    public async Task Index(Action? change = null) {
+    public async Task Index(Action? change = null, bool enrichAfter = true) {
         if (!await scan.WaitAsync(0)) throw new InvalidOperationException("Uma busca já está em andamento.");
         Busy = true;
         try { await games.Rescan(change); Notice = "Biblioteca atualizada."; }
         catch (Exception e) { Notice = e is InvalidOperationException ? e.Message : "A busca não foi concluída. Confira as pastas e tente novamente."; throw; }
         finally { Busy = false; scan.Release(); }
         // Artwork downloads must not hold the game service or delay configuration saves.
-        _ = EnrichSafely();
+        if (enrichAfter) _ = EnrichSafely();
     }
     async Task EnrichSafely() { try { await enrich(); } catch (Exception e) { RuntimeDiagnostics.Report("library", "enrichment-failed", e); } }
     public async Task AutomaticTick(DateTime now) {
@@ -68,12 +68,15 @@ public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enr
                 g.Id, name = library.Metadata.DisplayName(g), origin = g.Steam ? "Steam" : g.LocalMetadata != null ? "Cadastro local" : "Pasta automática",
                 executable = g.ProcessPath, folder = g.Folder, contentPath = g.ProcessArgument,
                 available = File.Exists(g.ProcessPath), enabled = library.Games.Any(item => item.Id == g.Id),
-                cover = art.Url(g, "cover"), metadata = library.Metadata.For(g)
+                cover = art.Url(g, "cover"), backdrop = art.Url(g, "backdrop"), wallpaper = art.Wallpapers.For(g.Id), metadata = library.Metadata.For(g)
             }),
             registrations = new LocalGameStore(library.Directory).Inspect(), notes = library.Notes
         };
     }
     public void Map(WebApplication app, ArtworkStore art, HubSession session, int port) {
+        var catalog = new GameCatalog(library.Directory);
+        var wallpapers = new WallpaperCatalog(library.Directory);
+        Game FindGame(string id) => library.Discovered.Concat(library.Games).FirstOrDefault(g => g.Id == id) ?? throw new InvalidOperationException("Jogo não encontrado na biblioteca.");
         T Body<T>(HttpContext ctx) => JsonSerializer.Deserialize<T>((string)ctx.Items["body"]!, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new InvalidOperationException("Pedido vazio.");
         app.MapPost("/hub-session", async (HttpContext ctx) => {
             if (ctx.Connection.RemoteIpAddress == null || !IPAddress.IsLoopback(ctx.Connection.RemoteIpAddress) || ctx.Request.Headers.Origin != $"http://127.0.0.1:{port}") return Results.StatusCode(403);
@@ -90,6 +93,24 @@ public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enr
             return Results.Ok(new { accepted = true });
         });
         app.MapGet("/api/hub", () => Results.Ok(Snapshot(art)));
+        app.MapGet("/api/hub/catalog/search", async (string query, HttpContext ctx) => Results.Ok(await catalog.Search(query, ctx.RequestAborted)));
+        app.MapGet("/api/hub/catalog/details", async (string id, HttpContext ctx) => Results.Ok(await catalog.Details(id, ctx.RequestAborted)));
+        app.MapGet("/api/hub/catalog/art/{id}/{kind}", async (string id, string kind, HttpContext ctx) =>
+            await catalog.Image(id, kind, ctx.RequestAborted) is string path ? Results.File(path, "image/jpeg") : Results.NotFound());
+        app.MapGet("/api/hub/wallpapers/search", async (string query, int? page, string? gameId, string? catalogId, HttpContext ctx) => {
+            var game = gameId == null ? null : FindGame(gameId);
+            var metadata = game == null ? null : library.Metadata.For(game);
+            var steamId = metadata?.StoreId ?? (game?.Steam == true ? game.ArtworkId : null) ?? catalog.KnownSteamId(metadata?.CatalogId ?? catalogId ?? "");
+            return Results.Ok(await wallpapers.Search(query, steamId, page ?? 1, ctx.RequestAborted));
+        });
+        app.MapGet("/api/hub/wallpapers/image/{id}/{kind}", async (string id, string kind, HttpContext ctx) =>
+            await wallpapers.ImageFile(id, kind, ctx.RequestAborted) is string path ? Results.File(path, "image/jpeg") : Results.NotFound());
+        app.MapPost("/api/hub/games/{id}/wallpaper", async (string id, HttpContext ctx) => {
+            var game = FindGame(id); var request = Body<HubWallpaper>(ctx);
+            var chosen = request.WallpaperId == null ? null : await wallpapers.Select(request.WallpaperId, ctx.RequestAborted);
+            ctx.RequestAborted.ThrowIfCancellationRequested(); art.Wallpapers.Save(game.Id, chosen);
+            return Results.Ok(Snapshot(art));
+        });
         app.MapPost("/api/hub/scan", async () => { await Index(); return Results.Ok(Snapshot(art)); });
         app.MapPost("/api/hub/settings", async (HttpContext ctx) => {
             var preferences = Body<LibraryPreferences>(ctx);
@@ -107,17 +128,48 @@ public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enr
         });
         app.MapPost("/api/hub/import", async (HttpContext ctx) => {
             var request = Body<HubImport>(ctx);
+            using var fields = JsonDocument.Parse((string)ctx.Items["body"]!);
+            bool yearEdited = fields.RootElement.EnumerateObject().Any(p => p.Name.Equals("year", StringComparison.OrdinalIgnoreCase));
+            GameMetadata? chosen = null;
+            var chosenWallpaper = string.IsNullOrWhiteSpace(request.Manifest) && request.WallpaperId != null ? await wallpapers.Select(request.WallpaperId, ctx.RequestAborted) : null;
+            string? catalogCover = null, catalogBackdrop = null;
+            if (string.IsNullOrWhiteSpace(request.Manifest) && !string.IsNullOrEmpty(request.CatalogId)) {
+                chosen = (await catalog.Details(request.CatalogId, ctx.RequestAborted)).Metadata;
+                // Remote addresses never come from the browser. Only known catalog entries can download images.
+                var covers = string.IsNullOrWhiteSpace(request.Cover) ? catalog.Image(request.CatalogId, "cover", ctx.RequestAborted) : Task.FromResult<string?>(null);
+                var backdrops = string.IsNullOrWhiteSpace(request.Backdrop) ? catalog.Image(request.CatalogId, "backdrop", ctx.RequestAborted) : Task.FromResult<string?>(null);
+                await Task.WhenAll(covers, backdrops); catalogCover = covers.Result; catalogBackdrop = backdrops.Result;
+            }
+            static string Text(string? value, int max) {
+                value = value?.Trim() ?? "";
+                if (value.Length > max || value.Any(c => char.IsControl(c) && c is not ('\r' or '\n' or '\t'))) throw new InvalidOperationException("A ficha contém um texto muito longo ou inválido.");
+                return value;
+            }
+            static string[] List(string? value) => Text(value, 1000).Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Take(20).ToArray();
+            if (request.Year is < 1900 or > 2199) throw new InvalidOperationException("Informe um ano válido.");
+            string? importedId = null;
+            ctx.RequestAborted.ThrowIfCancellationRequested();
             await Index(() => {
                 var store = new LocalGameStore(library.Directory);
-                if (!string.IsNullOrWhiteSpace(request.Manifest)) { store.Import(request.Manifest); return; }
+                if (!string.IsNullOrWhiteSpace(request.Manifest)) { importedId = store.Import(request.Manifest); return; }
                 var executable = request.Executable ?? "";
-                var metadata = new GameMetadata(null, request.Title ?? "", null, [], [], "", DateTime.UtcNow, Source: "local", Artwork: new(request.Cover ?? "", request.Backdrop ?? "", "", ""));
+                var metadata = new GameMetadata(null, Text(request.Title, 120), yearEdited ? request.Year : chosen?.Year,
+                    request.Developers == null ? chosen?.Developers ?? [] : List(request.Developers), request.Genres == null ? chosen?.Genres ?? [] : List(request.Genres),
+                    chosen?.SourceUrl ?? "", DateTime.UtcNow, Source: "local", Description: Text(request.Description ?? chosen?.Description, 4000),
+                    Artwork: new(string.IsNullOrWhiteSpace(request.Cover) ? catalogCover ?? "" : request.Cover, string.IsNullOrWhiteSpace(request.Backdrop) ? catalogBackdrop ?? "" : request.Backdrop, chosen?.SourceUrl ?? "", chosen?.SourceUrl ?? ""),
+                    Platforms: request.Platforms == null ? chosen?.Platforms : List(request.Platforms), Publishers: request.Publishers == null ? chosen?.Publishers : List(request.Publishers), CatalogId: request.CatalogId);
                 var registration = new LocalGameRegistration(executable, Path.GetDirectoryName(executable) ?? "", metadata, ContentPath: string.IsNullOrWhiteSpace(request.ContentPath) ? null : request.ContentPath);
                 // Same import validation as the CLI. No commands or arbitrary arguments.
                 var temp = Path.Combine(Path.GetTempPath(), "lg-import-" + Guid.NewGuid().ToString("N") + ".json");
-                try { File.WriteAllText(temp, JsonSerializer.Serialize(registration)); store.Import(temp); }
+                try { File.WriteAllText(temp, JsonSerializer.Serialize(registration)); importedId = store.Import(temp); }
                 finally { File.Delete(temp); }
-            });
+            }, enrichAfter: false);
+            // Indexing schedules artwork in the background; this explicit registration is small and must be ready on return.
+            if (importedId != null && chosenWallpaper != null) art.Wallpapers.Save(importedId, chosenWallpaper);
+            if (library.Games.FirstOrDefault(g => g.Id == importedId) is { } imported) await art.EnsureImported(imported);
+            if (chosen != null && (catalogCover == null && string.IsNullOrWhiteSpace(request.Cover) || catalogBackdrop == null && string.IsNullOrWhiteSpace(request.Backdrop)))
+                Notice = "Jogo adicionado. Algumas imagens não estão disponíveis; você pode usar imagens locais.";
+            _ = EnrichSafely();
             return Results.Ok(Snapshot(art));
         });
         app.MapPost("/api/hub/repair", async (HttpContext ctx) => {
@@ -139,23 +191,16 @@ public sealed class PcHub(GameLibrary library, GameService games, Func<Task> enr
         app.MapPost("/api/hub/pick", async (HttpContext ctx) => {
             var request = Body<HubPick>(ctx);
             if (request.Kind is not ("folder" or "executable" or "manifest" or "image" or "content")) throw new InvalidOperationException("Escolha de arquivo inválida.");
-            var result = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var thread = new Thread(() => {
-                try {
-                    // Dono sempre à frente: o launcher em tela cheia é TopMost e esconderia a janela de escolha.
-                    using var owner = new Form { TopMost = true, ShowInTaskbar = false, FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.CenterScreen, Size = new System.Drawing.Size(1, 1), Opacity = 0 };
-                    owner.Show(); owner.Activate();
-                    if (request.Kind == "folder") { using var dialog = new FolderBrowserDialog { Description = "Escolha a pasta dos jogos", UseDescriptionForTitle = true }; result.SetResult(dialog.ShowDialog(owner) == DialogResult.OK ? dialog.SelectedPath : null); }
-                    else { using var dialog = new OpenFileDialog { Filter = request.Kind switch { "executable" => "Jogo (*.exe)|*.exe", "manifest" => "Ficha de jogo (*.json)|*.json", "image" => "Imagens|*.jpg;*.jpeg;*.png;*.webp", _ => "Conteúdo do jogo|*.nup;main" } }; result.SetResult(dialog.ShowDialog(owner) == DialogResult.OK ? dialog.FileName : null); }
-                } catch (Exception e) { result.TrySetException(e); }
-            });
-            thread.SetApartmentState(ApartmentState.STA); thread.IsBackground = true; thread.Start();
-            return Results.Ok(new { path = await result.Task });
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, app.Lifetime.ApplicationStopping);
+            cancellation.CancelAfter(TimeSpan.FromMinutes(10));
+            return Results.Ok(new { path = await picker.Pick(request.Kind, cancellation.Token) });
         });
     }
     record HubToken(string Token);
     record HubEnabled(bool Enabled);
-    record HubImport(string? Title, string? Executable, string? Cover, string? Backdrop, string? ContentPath, string? Manifest);
+    record HubImport(string? Title, string? Executable, string? Cover, string? Backdrop, string? ContentPath, string? Manifest,
+        string? CatalogId = null, string? Description = null, int? Year = null, string? Developers = null, string? Genres = null, string? Platforms = null, string? Publishers = null, string? WallpaperId = null);
+    record HubWallpaper(string? WallpaperId);
     record HubRepair(string Id, string Executable, string? ContentPath);
     record HubPick(string Kind);
 }

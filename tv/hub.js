@@ -5,6 +5,144 @@ let setupPending = false, setupInitialized = false, setupControllerDetected = fa
 let capturePrefix, captureTimer, controllerKind, controllerName = "";
 let swapEdited=false, controllerSourceChanged=false, controllerRefresh=false;
 const bindings = new Map(), editedBindings = new Set();
+let pickerRequest;
+let catalogChoice = null, catalogTimer, catalogRequest, catalogRevision = 0, catalogLoading = false;
+let addWallpaper = null, wallpaperTarget, wallpaperCandidate, wallpaperRequest, wallpaperRevision = 0, wallpaperPage = 0, wallpaperImages = [], wallpaperApplying = false, wallpaperLastQuery = '';
+function cancelWallpaperSearch() { wallpaperRequest?.abort(); wallpaperRequest = null; wallpaperRevision++; }
+function resetAddWallpaper() { addWallpaper = null; $('addWallpaperNote').textContent = ''; $('addWallpaperPreview').hidden = true; $('clearAddWallpaper').hidden = true; }
+function wallpaperUrl(url) { return typeof url === 'string' && /^\/api\/hub\/wallpapers\/image\/wp-[a-f0-9]{32}\/(thumbnail|full)$/.test(url); }
+function wallpaperCaption(item) { return [item.width + ' × ' + item.height, item.source, item.artist, item.license].filter(Boolean).join(' · '); }
+function showWallpaper(item) {
+  wallpaperCandidate = item; $('wallpaperLarge').src = item.preview; $('wallpaperCaption').textContent = wallpaperCaption(item);
+  const source = $('wallpaperSource'); source.hidden = !/^https:\/\/(wallhaven\.cc|commons\.wikimedia\.org|store\.steampowered\.com)\//.test(item.sourceUrl || '');
+  if (!source.hidden) source.href = item.sourceUrl;
+  $('wallpaperPreview').hidden = false; $('wallpaperUse').disabled = false;
+  $('wallpaperPreview').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function renderWallpapers() {
+  $('wallpaperGrid').replaceChildren(...wallpaperImages.filter(item => wallpaperUrl(item.thumbnail) && wallpaperUrl(item.preview)).map(item => {
+    const tile = el('button','wallpaper-tile'); tile.type = 'button'; tile.setAttribute('aria-label', 'Ver fundo ' + item.width + ' por ' + item.height + ' · ' + item.source);
+    const image = el('img'); image.src = item.thumbnail; image.alt = ''; image.loading = 'lazy'; image.onerror = () => { image.hidden = true; };
+    const size = item.width >= 3840 && item.height >= 2160 ? '4K · ' : '';
+    tile.append(image, el('strong','',size + item.width + ' × ' + item.height), el('span','muted',item.source)); tile.onclick = () => showWallpaper(item); return tile;
+  }));
+}
+async function searchWallpapers(more = false) {
+  const query = $('wallpaperQuery').value.trim(); cancelWallpaperSearch(); const revision = wallpaperRevision;
+  if (more && query !== wallpaperLastQuery) more = false;
+  if (query.length < 2) { $('wallpaperStatus').textContent = 'Digite pelo menos duas letras do nome do jogo.'; return; }
+  if (!more) { wallpaperImages = []; wallpaperPage = 0; wallpaperCandidate = null; $('wallpaperGrid').replaceChildren(); $('wallpaperPreview').hidden = true; }
+  const page = wallpaperPage + 1, request = new AbortController(); wallpaperRequest = request;
+  $('wallpaperStatus').textContent = 'Buscando fundos em alta resolução…'; $('wallpaperMore').disabled = true;
+  const target = wallpaperTarget;
+  const suffix = target?.gameId ? '&gameId=' + encodeURIComponent(target.gameId) : catalogChoice ? '&catalogId=' + encodeURIComponent(catalogChoice.id) : '';
+  try {
+    const result = await api('/api/hub/wallpapers/search?query=' + encodeURIComponent(query) + '&page=' + page + suffix, undefined, {signal:request.signal});
+    if (revision !== wallpaperRevision) return;
+    const known = new Set(wallpaperImages.map(i=>i.id)); wallpaperImages.push(...result.images.filter(i=>!known.has(i.id))); wallpaperPage = page; wallpaperLastQuery = query;
+    renderWallpapers(); $('wallpaperMore').hidden = !result.hasMore;
+    $('wallpaperStatus').textContent = [wallpaperImages.length ? 'Escolha uma imagem para ver a prévia e usar como fundo.' : 'Nenhum fundo encontrado. Tente outro nome ou escolha uma imagem local.', ...(result.warnings || []), result.cached ? 'Resultados guardados neste PC.' : ''].filter(Boolean).join(' ');
+  } catch(error) { if (!request.signal.aborted && revision === wallpaperRevision) $('wallpaperStatus').textContent = error.message; }
+  finally { if (wallpaperRequest === request) wallpaperRequest = null; if (revision === wallpaperRevision) $('wallpaperMore').disabled = false; }
+}
+function openWallpapers(game = null) {
+  if (wallpaperApplying) return;
+  cancelWallpaperSearch(); wallpaperTarget = game ? {gameId:game.id} : {add:true}; wallpaperImages = []; wallpaperPage = 0; wallpaperCandidate = null;
+  $('wallpaperQuery').value = (game?.metadata?.title || game?.name || catalogChoice?.metadata.title || $('addTitle').value).trim();
+  $('wallpaperGrid').replaceChildren(); $('wallpaperPreview').hidden = true; $('wallpaperMore').hidden = true;
+  if (!$('wallpaperDialog').open) $('wallpaperDialog').showModal();
+  return searchWallpapers();
+}
+async function useWallpaper() {
+  if (!wallpaperCandidate || wallpaperApplying) return;
+  const item = wallpaperCandidate, target = wallpaperTarget; wallpaperApplying = true; $('wallpaperUse').disabled = true;
+  $('wallpaperStatus').textContent = target.add ? 'Fundo escolhido.' : 'Baixando e salvando o fundo…';
+  try {
+    if (target.add) {
+      addWallpaper = item; $('addBackdrop').value = ''; $('addWallpaperPreview').src = item.thumbnail; $('addWallpaperPreview').hidden = false;
+      $('addWallpaperNote').textContent = 'Fundo escolhido · ' + wallpaperCaption(item); $('clearAddWallpaper').hidden = false;
+    } else {
+      snapshot = await api('/api/hub/games/' + encodeURIComponent(target.gameId) + '/wallpaper', {wallpaperId:item.id}); render(); openGame(target.gameId);
+    }
+    $('wallpaperDialog').close(); notice(target.add ? 'Fundo escolhido. Ele será salvo ao adicionar o jogo.' : 'Fundo atualizado.');
+  } catch(error) { $('wallpaperStatus').textContent = error.message; }
+  finally { wallpaperApplying = false; $('wallpaperUse').disabled = false; }
+}
+const catalogFields = ['Description','Year','Platforms','Developers','Publishers','Genres'];
+function cancelCatalog() { clearTimeout(catalogTimer); catalogRequest?.abort(); catalogRequest = null; catalogLoading = false; catalogRevision++; }
+function clearCatalog(clearFields = false) {
+  cancelCatalog(); catalogChoice = null; $('catalogClear').hidden = true;
+  $('catalogResults').replaceChildren(); $('catalogPreview').replaceChildren(); $('catalogPreview').hidden = true;
+  if (clearFields) for (const field of catalogFields) $('add' + field).value = '';
+  if (clearFields) resetAddWallpaper();
+}
+function catalogImage(url, className = '') {
+  // The catalog only returns authenticated, same-origin image routes.
+  if (typeof url !== 'string' || !/^\/api\/hub\/catalog\/art\/(steam-\d+|wiki-Q\d+)\/(cover|backdrop)$/.test(url)) return null;
+  const image = el('img', className); image.src = url; image.alt = ''; image.loading = 'lazy';
+  image.onerror = () => { image.hidden = true; }; return image;
+}
+function catalogCard(entry, preview = false) {
+  const m = entry.metadata, card = el(preview ? 'div' : 'button', 'catalog-card');
+  if (!preview) { card.type = 'button'; card.setAttribute('aria-label', 'Escolher ' + m.title + (m.year ? ', ' + m.year : '')); }
+  const backdrop = catalogImage(entry.backdrop, 'catalog-backdrop'); if (backdrop) card.append(backdrop);
+  const cover = catalogImage(entry.cover, 'catalog-cover'); if (cover) card.append(cover); else card.append(el('div','catalog-cover catalog-placeholder',m.title.charAt(0)));
+  const body = el('div','catalog-card-body'), title = el('div','catalog-title'); title.append(el('strong','',m.title));
+  if (m.year) title.append(el('span','catalog-year',String(m.year))); body.append(title);
+  body.append(el('span','muted',(m.platforms || []).join(' · ') || 'Plataforma não informada'));
+  if (m.developers?.length) body.append(el('span','muted',m.developers.join(' · ')));
+  if (m.description) body.append(el('p','catalog-description',m.description));
+  if (preview) {
+    if (m.genres?.length) body.append(el('span','muted',m.genres.join(' · ')));
+    if (/^https:\/\/(store\.steampowered\.com|(?:en|pt)\.wikipedia\.org)\//.test(m.sourceUrl || '')) {
+      const link = el('a','catalog-source',m.source === 'steam' ? 'Fonte: Steam' : 'Fonte: Wikipédia / Wikidata'); link.href = m.sourceUrl; link.target = '_blank'; link.rel = 'noopener noreferrer'; body.append(link);
+    }
+  } else body.append(el('span','catalog-source',m.source === 'steam' ? 'Steam' : 'Wikipédia / Wikidata'));
+  card.append(body);
+  if (!preview) card.onclick = () => chooseCatalog(entry);
+  return card;
+}
+async function searchCatalog() {
+  const query = $('addTitle').value.trim(); cancelCatalog(); const revision = catalogRevision;
+  if (query.length < 2) { $('catalogStatus').textContent = 'Digite pelo menos duas letras do nome do jogo.'; return; }
+  const request = new AbortController(); catalogRequest = request;
+  $('catalogStatus').textContent = 'Buscando fichas…'; $('catalogResults').replaceChildren();
+  try {
+    const result = await api('/api/hub/catalog/search?query=' + encodeURIComponent(query), undefined, {signal: request.signal});
+    if (revision !== catalogRevision) return;
+    $('catalogResults').replaceChildren(...result.matches.map(entry => catalogCard(entry)));
+    const status = result.matches.length ? 'Escolha a edição do seu jogo para preencher a ficha.' : 'Nenhuma ficha encontrada. Você pode cadastrar o jogo e preencher os dados manualmente.';
+    $('catalogStatus').textContent = [status, ...(result.warnings || []), result.cached ? 'Resultados guardados neste PC.' : ''].filter(Boolean).join(' ');
+  } catch (error) { if (!request.signal.aborted && revision === catalogRevision) $('catalogStatus').textContent = error.message + ' O cadastro manual continua disponível.'; }
+  finally { if (catalogRequest === request) catalogRequest = null; }
+}
+async function chooseCatalog(entry) {
+  cancelCatalog(); const revision = catalogRevision, request = new AbortController(); catalogRequest = request; catalogLoading = true;
+  $('catalogStatus').textContent = 'Carregando informações e imagens…';
+  $('catalogClear').hidden = false;
+  try {
+    const detailed = await api('/api/hub/catalog/details?id=' + encodeURIComponent(entry.id), undefined, {signal:request.signal});
+    if (revision !== catalogRevision) return;
+    const m = detailed.metadata; catalogChoice = detailed; catalogLoading = false;
+    resetAddWallpaper();
+    $('addTitle').value = m.title;
+    for (const field of catalogFields) { const value = m[field.charAt(0).toLowerCase() + field.slice(1)]; $('add' + field).value = Array.isArray(value) ? value.join('; ') : value ?? ''; }
+    $('catalogResults').replaceChildren(); $('catalogPreview').replaceChildren(catalogCard(detailed, true)); $('catalogPreview').hidden = false; $('catalogClear').hidden = false;
+    $('catalogStatus').textContent = 'Ficha selecionada. Você pode ajustar o nome e as informações antes de adicionar.' + (!detailed.backdrop ? ' Esta fonte não oferece um fundo adequado; você pode escolher uma imagem local.' : '');
+  } catch (error) { if (!request.signal.aborted && revision === catalogRevision) $('catalogStatus').textContent = error.message + ' Tente novamente ou use o cadastro manual.'; }
+  finally { if (catalogRequest === request) { catalogRequest = null; catalogLoading = false; } }
+}
+function catalogTitleChanged() {
+  if (catalogChoice) {
+    cancelCatalog();
+    // A custom display name does not discard an explicitly chosen identity.
+    $('catalogStatus').textContent = 'Ficha: ' + catalogChoice.metadata.title + '. O nome na biblioteca será o que você digitou.'; return;
+  }
+  cancelCatalog(); $('catalogResults').replaceChildren();
+  if ($('addTitle').value.trim().length < 2) { $('catalogStatus').textContent = 'Digite o nome para buscar capas e informações.'; return; }
+  catalogTimer = setTimeout(searchCatalog, 450);
+}
+function pickerCancelButton() { return $($('gameDialog').open ? 'cancelDialogPick' : 'cancelPick'); }
 async function refreshSetup() {
   const info = await api('/api/hub/setup'), p = info.preferences;
   setupPending = setupReview || !p.setupCompleted; $('setupPanel').hidden = !setupPending;
@@ -137,13 +275,51 @@ function pointerLabels() { $('mouseSpeedValue').textContent = $('mouseSpeed').va
 for (const id of ['mouseSpeed','mouseDeadzone','mouseCurve']) $(id).oninput = pointerLabels;
 const titles = { library: ['Biblioteca', 'Confira os jogos e gerencie o que aparece no launcher.'], folders: ['Pastas e busca', 'Defina onde encontrar jogos e quando atualizar a biblioteca.'], add: ['Adicionar jogo', 'Traga uma instalação local para o seu launcher.'], system: ['Configurações', 'Ajuste as opções do LazyGaming neste PC.'] };
 function notice(text, error = false) { LGNotices.show($('notice'), text); $('notice').hidden = !text; $('notice').classList.toggle('error', error); LGNotices.show($('dialogNotice'), $('gameDialog').open ? text : ''); }
-async function api(path, body) {
+async function api(path, body, options = {}) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  const timeout = setTimeout(cancel, path === '/api/hub/pick' ? 600000 : 30000);
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  if (options.signal?.aborted) cancel();
   let response;
-  try { response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }); }
-  catch (_) { showOffline(false); throw Error('Abra o LazyGaming para continuar.'); }
+  try {
+  try { response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal }); }
+  catch (error) {
+    if (controller.signal.aborted) {
+      if (options.signal?.aborted) throw error;
+      throw Error('O LazyGaming demorou para responder. Tente novamente.');
+    }
+    showOffline(false); throw Error('Abra o LazyGaming para continuar.');
+  }
   if(response.status === 401) { showOffline(true); throw Error('Reabra a Central para continuar.'); }
-  const result = await response.json(); if (!response.ok) throw Object.assign(Error(result.error || 'Não foi possível concluir a operação.'), { status: response.status }); return result;
+  let result;
+  try { result = await response.json(); }
+  catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw Error(controller.signal.aborted ? 'O LazyGaming demorou para responder. Tente novamente.' : 'O LazyGaming enviou uma resposta incompleta. Tente novamente.');
+  }
+  if (!response.ok) throw Object.assign(Error(result.error || 'Não foi possível concluir a operação.'), { status: response.status }); return result;
+  } finally { clearTimeout(timeout); options.signal?.removeEventListener('abort', cancel); }
 }
+async function pick(kind) {
+  if (pickerRequest) { pickerCancelButton().focus(); return null; }
+  if (working) { notice('Aguarde a operação em andamento antes de escolher um arquivo.'); return null; }
+  const request = new AbortController(); pickerRequest = request;
+  const status = $($('gameDialog').open ? 'dialogPickerStatus' : 'pickerStatus');
+  status.hidden = false;
+  const text = kind === 'folder' ? 'Escolha uma pasta na janela do Windows.' : 'Escolha um arquivo na janela do Windows.';
+  $('pickerNote').textContent = text; $('dialogPickerNote').textContent = text;
+  try { return (await api('/api/hub/pick', { kind }, { signal: request.signal })).path; }
+  catch (error) {
+    if (request.signal.aborted) notice('Seleção cancelada.');
+    else { if (typeof LGDiagnostics !== 'undefined') LGDiagnostics.report('hub-picker-failed', error); if (!offline) notice(error.message, true); }
+    return null;
+  } finally { pickerRequest = null; status.hidden = true; }
+}
+$('cancelPick').onclick = () => pickerRequest?.abort();
+$('cancelDialogPick').onclick = () => pickerRequest?.abort();
+$('gameDialog').addEventListener('close', () => pickerRequest?.abort());
+window.addEventListener('pagehide', () => { pickerRequest?.abort(); cancelCatalog(); cancelWallpaperSearch(); });
 function rememberReopen(available) { if(available)sessionStorage.setItem('lg-reopen','yes'); $('reopenClient').hidden = sessionStorage.getItem('lg-reopen') !== 'yes'; }
 function showOffline(expired) {
   offline=true; endCapture(); $('offlinePanel').hidden=false; $('notice').hidden=true;
@@ -178,7 +354,9 @@ async function refreshController() {
   try{controllerStatus(await api('/api/hub/controller'));}catch(_){}finally{controllerRefresh=false;}
 }
 async function run(action, message) {
-  if (working) return; working = true; $('scan').disabled = true;
+  if (working) { notice('Uma operação está em andamento. Aguarde a conclusão.'); return; }
+  if (pickerRequest) { notice('Conclua ou cancele a seleção de arquivo antes de continuar.'); pickerCancelButton().focus(); return; }
+  working = true; $('scan').disabled = true;
   try { await action(); if (message) notice(message); }
   catch (error) { if (typeof LGDiagnostics !== 'undefined') LGDiagnostics.report('hub-action-failed', error); if(!offline)notice(error.message, true); }
   finally { working = false; $('scan').disabled = offline; }
@@ -225,6 +403,9 @@ function openGame(id) {
   $('detailOrigin').textContent = selected.origin; $('detailTitle').textContent = selected.name; $('detailName').value = selected.name;
   $('detailStatus').textContent = selected.available ? (selected.enabled ? 'Disponível na biblioteca.' : 'Oculto no launcher.') : registration?.reason || 'Instalação indisponível. Confira a pasta e o executável.';
   $('detailDescription').textContent = selected.metadata?.description || '';
+  $('detailBackdrop').hidden = !selected.backdrop; if (selected.backdrop) $('detailBackdrop').src = selected.backdrop;
+  $('detailWallpaperNote').textContent = selected.wallpaper ? wallpaperCaption(selected.wallpaper) : '';
+  $('resetGameBackdrop').hidden = !selected.wallpaper;
   paths($('detailPaths'), [['Pasta', selected.folder], ['Executável', selected.executable], ['Conteúdo', selected.contentPath]]);
   $('rename').disabled = !snapshot.games.some(g => g.id === id); $('toggleGame').disabled = $('rename').disabled;
   $('toggleGame').textContent = selected.enabled ? 'Ocultar no launcher' : 'Mostrar no launcher';
@@ -283,13 +464,30 @@ $('scan').onclick = () => run(async () => { notice('Buscando jogos instalados…
 $('steam').onchange = () => run(() => saveSettings({ steam: $('steam').checked }), 'Busca Steam atualizada.').finally(render);
 $('automatic').onchange = () => run(() => saveSettings({ automatic: $('automatic').checked }), 'Busca automática atualizada.').finally(render);
 $('interval').onchange = () => run(() => saveSettings({ intervalMinutes: Number($('interval').value) }), 'Intervalo atualizado.').finally(render);
-$('addFolder').onclick = () => run(async () => addFolder((await api('/api/hub/pick', { kind: 'folder' })).path));
+$('addFolder').onclick = async () => { const path = await pick('folder'); if (path) await run(() => addFolder(path)); };
 $('saveFolder').onclick = () => run(() => addFolder($('folderPath').value.trim()));
-document.querySelectorAll('[data-pick]').forEach(node => node.onclick = () => run(async () => { const result = await api('/api/hub/pick', { kind: node.dataset.pick }); if (result.path) $(node.dataset.target).value = result.path; }));
+document.querySelectorAll('[data-pick]').forEach(node => node.onclick = async () => { const path = await pick(node.dataset.pick); if (path) { const target = $(node.dataset.target); target.value = path; target.dispatchEvent(new Event('input', { bubbles: true })); } });
 $('addGame').onsubmit = event => { event.preventDefault(); run(async () => {
-  snapshot = await api('/api/hub/import', { title: $('addTitle').value.trim(), executable: $('addExecutable').value.trim(), contentPath: $('addContent').value.trim(), cover: $('addCover').value.trim(), backdrop: $('addBackdrop').value.trim() }); render(); $('addGame').reset(); notice('Jogo adicionado à biblioteca.');
+  if (catalogLoading) { notice('Aguarde a ficha carregar ou escolha usar o cadastro manual.'); return; }
+  const year = $('addYear').value.trim();
+  snapshot = await api('/api/hub/import', { title: $('addTitle').value.trim(), executable: $('addExecutable').value.trim(), contentPath: $('addContent').value.trim(), cover: $('addCover').value.trim(), backdrop: $('addBackdrop').value.trim(),
+    catalogId: catalogChoice?.id || null, wallpaperId: addWallpaper?.id || null, description: $('addDescription').value.trim(), year: year ? Number(year) : null, platforms: $('addPlatforms').value.trim(), developers: $('addDevelopers').value.trim(), publishers: $('addPublishers').value.trim(), genres: $('addGenres').value.trim() });
+  render(); $('addGame').reset(); clearCatalog(true); $('catalogStatus').textContent = 'Digite o nome para buscar capas e informações.'; notice(snapshot.notice?.startsWith('Jogo adicionado.') ? snapshot.notice : 'Jogo adicionado à biblioteca.');
 }); };
-$('importManifest').onclick = () => run(async () => { const result = await api('/api/hub/pick', { kind: 'manifest' }); if (!result.path) return; snapshot = await api('/api/hub/import', { manifest: result.path }); render(); notice('Ficha importada.'); });
+$('addTitle').oninput = catalogTitleChanged;
+$('addTitle').onkeydown = event => { if (event.key === 'Enter' && !catalogChoice) { event.preventDefault(); searchCatalog(); } };
+$('catalogSearch').onclick = () => { clearCatalog(true); return searchCatalog(); };
+$('catalogClear').onclick = () => { clearCatalog(true); $('catalogStatus').textContent = 'Cadastro manual. Preencha as informações e escolha imagens, se quiser.'; };
+$('findAddBackdrop').onclick = () => openWallpapers();
+$('findGameBackdrop').onclick = () => openWallpapers(selected);
+$('clearAddWallpaper').onclick = resetAddWallpaper;
+$('addBackdrop').addEventListener('input', resetAddWallpaper);
+$('wallpaperSearchForm').onsubmit = event => { event.preventDefault(); return searchWallpapers(); };
+$('wallpaperMore').onclick = () => searchWallpapers(true);
+$('wallpaperUse').onclick = useWallpaper;
+$('wallpaperDialog').addEventListener('close', cancelWallpaperSearch);
+$('resetGameBackdrop').onclick = () => run(async () => { const id = selected.id; snapshot = await api('/api/hub/games/' + encodeURIComponent(id) + '/wallpaper', {wallpaperId:null}); render(); openGame(id); notice('Fundo automático restaurado.'); });
+$('importManifest').onclick = async () => { const path = await pick('manifest'); if (path) await run(async () => { snapshot = await api('/api/hub/import', { manifest: path }); render(); notice('Ficha importada.'); }); };
 $('rename').onclick = () => run(async () => { await api('/api/games/' + selected.id + '/settings', { name: $('detailName').value.trim() }); await reload(); openGame(selected.id); notice('Nome salvo.'); });
 $('toggleGame').onclick = () => run(async () => { snapshot = await api('/api/hub/games/' + selected.id + '/enabled', { enabled: !selected.enabled }); render(); openGame(selected.id); notice('Biblioteca atualizada.'); });
 $('checkGame').onclick = () => run(async () => { const id = selected.id; snapshot = await api('/api/hub/scan', {}); render(); openGame(id); notice(selected.available ? 'Executável encontrado. Nenhum jogo foi aberto.' : 'Instalação indisponível. Confira o caminho abaixo.'); });

@@ -4,11 +4,27 @@ import {once} from 'node:events';
 import {readFileSync,writeFileSync,mkdirSync,rmSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
-import {createHmac,randomBytes} from 'node:crypto';
+import {createHmac,createHash,randomBytes} from 'node:crypto';
+import {deflateSync} from 'node:zlib';
 const port=47978,base=`http://127.0.0.1:${port}`,data=join(tmpdir(),'lazygaming-test-'+port),root=join(tmpdir(),'lg-hub-http-'+randomBytes(8).toString('hex'));
 mkdirSync(join(data,'library'),{recursive:true});mkdirSync(root,{recursive:true});
 writeFileSync(join(data,'library','settings.json'),JSON.stringify({Folders:[],Steam:false,Automatic:false,IntervalMinutes:5}));
 writeFileSync(join(data,'library','local-games.json'),'[]');
+const catalogEntry={Id:'wiki-Q213911',Metadata:{Title:'The Legend of Zelda: Ocarina of Time',Year:1998,Developers:['Nintendo'],Genres:['Aventura'],Platforms:['Nintendo 64'],Publishers:['Nintendo'],Description:'Aventura de Link.',Source:'wikipedia',SourceUrl:'https://pt.wikipedia.org/wiki/The_Legend_of_Zelda:_Ocarina_of_Time',CheckedAt:new Date().toISOString(),CatalogId:'wiki-Q213911'}};
+const catalogRoot=join(data,'library','catalog-search');mkdirSync(catalogRoot,{recursive:true});
+writeFileSync(join(catalogRoot,'wiki-Q213911.json'),JSON.stringify({Entry:catalogEntry,Detailed:true}));
+writeFileSync(join(catalogRoot,'search-v2-'+createHash('sha256').update('OCARINA').digest('hex')+'.json'),JSON.stringify({At:new Date().toISOString(),Results:{Matches:[catalogEntry],Warnings:[]}}));
+// Full-HD striped PNG, generated as isolated fixture data without external downloads.
+function crc32(bytes){let crc=0xffffffff;for(const b of bytes){crc^=b;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0;}
+function chunk(type,bytes){const tag=Buffer.from(type),head=Buffer.alloc(4),crc=Buffer.alloc(4);head.writeUInt32BE(bytes.length);crc.writeUInt32BE(crc32(Buffer.concat([tag,bytes])));return Buffer.concat([head,tag,bytes,crc]);}
+const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(1920);ihdr.writeUInt32BE(1080,4);ihdr[8]=8;ihdr[9]=2;
+const pixels=Buffer.alloc((1920*3+1)*1080);for(let y=0;y<1080;y++)pixels.fill(y<540?40:220,y*(1920*3+1)+1,(y+1)*(1920*3+1));
+const picture=Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),chunk('IHDR',ihdr),chunk('IDAT',deflateSync(pixels)),chunk('IEND',Buffer.alloc(0))]);
+const wallpaperId='wp-'+'a'.repeat(32),wallpaper={Id:wallpaperId,Title:'Ocarina',Source:'Wallhaven',Width:1920,Height:1080,SourceUrl:'https://wallhaven.cc/w/example'};
+const wallpaperRoot=join(data,'library','wallpapers','cache');mkdirSync(wallpaperRoot,{recursive:true});
+writeFileSync(join(wallpaperRoot,wallpaperId+'.json'),JSON.stringify({Image:wallpaper,FullUrl:'https://w.wallhaven.cc/full/example.jpg',ThumbnailUrl:'https://th.wallhaven.cc/example.jpg'}));
+writeFileSync(join(wallpaperRoot,wallpaperId+'-full.jpg'),picture);
+writeFileSync(join(wallpaperRoot,'search-'+createHash('sha256').update('OCARINA||1').digest('hex').slice(0,32)+'.json'),JSON.stringify({At:new Date().toISOString(),Results:{Images:[wallpaper],Warnings:[],HasMore:false}}));
 const exe=join(root,'Example.exe');writeFileSync(exe,'test fixture never executed');
 let key,cookie;
 const child=spawn('dotnet',[resolve('src/LazyGaming.Host/bin/Debug/net10.0-windows/LazyGaming.Host.dll'),'--preview-library'],{env:{...process.env,LAZYGAMING_PORT:String(port)},windowsHide:true,stdio:['ignore','pipe','pipe']});
@@ -19,6 +35,8 @@ async function hub(route,body,origin=base){const result=await call(route,body,{C
 try{
  for(let i=0;i<100;i++){try{if((await fetch(base+'/api/discover')).ok)break;}catch{}if(child.exitCode!==null)throw Error(logs);await new Promise(r=>setTimeout(r,100));}
  assert.equal((await call('/api/hub')).response.status,401);
+ assert.equal((await call('/api/hub/catalog/details?id=wiki-Q213911')).response.status,401,'catalog requires independent local authentication');
+ assert.equal((await call('/api/hub/wallpapers/search?query=ocarina')).response.status,401,'wallpaper browsing requires local authentication');
  key=JSON.parse(readFileSync(join(data,'pc-command.json'),'utf8')).Key;
  assert.equal((await signed('/api/hub/open',{})).response.status,200,'PC opens without pairing any TV');
  assert.equal((await signed('/api/status')).response.status,401,'local opening key cannot control games/status');
@@ -73,8 +91,21 @@ try{
  assert.equal((await signed('/api/displays',{monitorsEnabled:false})).response.status,409,'pause blocks display actions');
  assert.equal((await hub('/api/hub/activity',{enabled:true},'https://example.com')).response.status,401);
  assert.equal((await hub('/api/hub/activity',{enabled:true})).response.status,200);
- let added=await hub('/api/hub/import',{title:'Example local',executable:exe});assert.equal(added.response.status,200,JSON.stringify(added.value));
+ const catalogResult=await hub('/api/hub/catalog/search?query=ocarina');assert.equal(catalogResult.response.status,200);assert.equal(catalogResult.value.matches[0].metadata.year,1998);
+ assert.equal((await hub('/api/hub/catalog/details?id=wiki-Q213911')).value.metadata.platforms[0],'Nintendo 64');
+ assert.equal((await hub('/api/hub/catalog/details?id=..%2Fpairing')).response.status,409,'catalog rejects path traversal');
+ let added=await hub('/api/hub/import',{title:'Example local',executable:exe,catalogId:'wiki-Q213911'});assert.equal(added.response.status,200,JSON.stringify(added.value));
+ assert.equal(added.value.games[0].metadata.description,'Aventura de Link.');assert.equal(added.value.games[0].metadata.source,'local');assert.equal(added.value.games[0].metadata.storeId,null);
+ const savedRegistration=JSON.parse(readFileSync(join(data,'library','local-games.json'),'utf8'))[0];
+ assert.equal(savedRegistration.Metadata.Platforms[0],'Nintendo 64');assert.equal(savedRegistration.Executable,exe);assert.equal(savedRegistration.Metadata.Title,'Example local','custom name and installation stay independent from catalog identity');
  assert.equal(added.value.games.length,1);let id=added.value.games[0].id;
+ const gallery=await hub('/api/hub/wallpapers/search?query=ocarina');assert.equal(gallery.response.status,200);assert.equal(gallery.value.images[0].width,1920);
+ const custom=await hub('/api/hub/games/'+id+'/wallpaper',{wallpaperId});assert.equal(custom.response.status,200,JSON.stringify(custom.value));assert.match(custom.value.games[0].backdrop,/custom-/);
+ const served=await fetch(base+custom.value.games[0].backdrop);assert.equal(served.status,200);assert.deepEqual(Buffer.from(await served.arrayBuffer()),picture,'shared launcher art uses the saved choice');
+ assert.equal((await hub('/api/hub/games/'+id+'/wallpaper',{wallpaperId:'../../pairing.json'})).response.status,409);
+ assert.equal((await hub('/api/hub/games/'+id+'/wallpaper',{wallpaperId:null},'https://example.com')).response.status,401);
+ assert.equal((await hub('/api/hub')).value.games[0].wallpaper.id,wallpaperId,'failed actions preserve chosen wallpaper');
+ assert.equal((await hub('/api/hub/games/'+id+'/wallpaper',{wallpaperId:null})).value.games[0].wallpaper,null,'automatic background can be restored');
  assert.equal((await hub('/api/hub/import',{title:'Example local',executable:exe})).value.games.length,1);
  assert.equal((await hub('/api/hub/games/'+id+'/enabled',{enabled:false})).value.games[0].enabled,false);
  assert.equal((await hub('/api/status')).value.state.games.length,0);
@@ -83,6 +114,13 @@ try{
  const moved=join(root,'New');mkdirSync(moved);const newExe=join(moved,'Example.exe');writeFileSync(newExe,'never executed');
  const repaired=await hub('/api/hub/repair',{id,executable:newExe});assert.equal(repaired.response.status,200,JSON.stringify(repaired.value));assert.equal(repaired.value.games[0].id,id);assert.equal(repaired.value.games[0].name,'Meu exemplo');
  assert.equal((await hub('/api/hub/import',{title:'No',executable:join(root,'missing.exe')})).response.status,409);
+ const manifest=join(root,'game.json');
+ writeFileSync(manifest,JSON.stringify({Executable:newExe,WorkingDirectory:moved,Metadata:{Title:'Ficha importada',Source:'local',Developers:[],Genres:[],Artwork:{Cover:'',Backdrop:'',CoverSourceUrl:'',BackdropSourceUrl:''}}}));
+ const imported=await hub('/api/hub/import',{manifest});
+ assert.equal(imported.response.status,200,JSON.stringify(imported.value));
+ assert.equal(imported.value.games.length,1,'importar ficha da mesma instalação não duplica');
+ assert.equal(imported.value.games[0].name,'Meu exemplo','ficha preserva nome personalizado');
+ assert.equal((await hub('/api/hub/pick',{kind:'invalid'})).response.status,409,'seletor recusa tipos desconhecidos sem abrir janela');
  assert.equal((await hub('/api/games/'+id+'/start',{})).response.status,401,'hub cookie cannot launch games');
  assert.equal((await hub('/api/launcher/toggle',{})).response.status,401,'hub does not control launcher');
  assert.equal((await hub('/api/hub/settings',{folders:[{path:resolve('/')}],steam:false,automatic:false,intervalMinutes:5})).response.status,409,'whole drive refused');

@@ -16,7 +16,9 @@ static class LibraryMetadataTests
             File.WriteAllText(Path.Combine(folder, "bin", "UnityCrashHandler64.exe"), "helper");
             var library = new GameLibrary(root, false, Path.Combine(root, "no-steam"), [folder]);
             var game = library.Games.Single();
-            var discovery = new GameLibrary(Path.Combine(root, "discovery-cache"), false, Path.Combine(root, "no-steam"), [root], true);
+            var discoveryRoot = Path.Combine(root, "discovery-cache");
+            new LibrarySettings(discoveryRoot).Save(new([], Steam: false, Automatic: false));
+            var discovery = new GameLibrary(discoveryRoot, false, Path.Combine(root, "no-steam"), [root], true);
             Check(discovery.Games.Count == 1, "raiz genérica encontra instalação sem cadastrar título");
             var added = Path.Combine(root, "Added Later"); Directory.CreateDirectory(added); File.WriteAllText(Path.Combine(added, "Added.exe"), "fixture");
             discovery.Refresh(); Check(discovery.Games.Count == 2 && discovery.Games.Any(g => g.Name == "Added Later"), "nova busca descobre jogo adicionado depois sem alterar código");

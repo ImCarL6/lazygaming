@@ -1,5 +1,14 @@
 using LazyGaming;
 
+if (args.Contains("--verify-wallpapers")) { await WallpaperTests.Run(); return; }
+if (args.Contains("--verify-wallpapers-live")) { await WallpaperTests.Live(); return; }
+if (args.Contains("--verify-catalog-live")) { await GameCatalogTests.Live(); return; }
+if (args.Contains("--verify-catalog")) { await GameCatalogTests.Run(); return; }
+if (args.Contains("--verify-library")) {
+    await LibraryMetadataTests.Run(); await GameCatalogTests.Run(); await WallpaperTests.Run(); await LocalGameTests.Run();
+    await LaunchChoiceTests.Run(); await HubLibraryTests.Run(); await LaunchIsolationTests.Run(); await ProcessExitTests.Run(); return;
+}
+if (args.Contains("--verify-hub")) { await HubLibraryTests.Run(); return; }
 if (args.Contains("--process-lifetime-fixture")) { await Task.Delay(1000); Environment.Exit(259); return; }
 if (args.Contains("--runtime-identity-fixture")) { await Task.Delay(30000); return; }
 if (args.Contains("--verify-runtime-identity")) { RuntimeIdentityTests.Run(); return; }
@@ -100,6 +109,8 @@ EmulatorLibraryTests.Run();
 }
 NativeDesktopTests.Run();
 await LibraryMetadataTests.Run();
+await GameCatalogTests.Run();
+await WallpaperTests.Run();
 await LocalGameTests.Run();
 await LaunchChoiceTests.Run();
 await HubLibraryTests.Run();

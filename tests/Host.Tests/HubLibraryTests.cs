@@ -5,6 +5,28 @@ static class HubLibraryTests
 {
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
     public static async Task Run() {
+        var requested = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pickerCalls = 0;
+        var picker = new LocalFilePicker((kind, cancellation) => { pickerCalls++; return requested.Task.WaitAsync(cancellation); });
+        using (var cancel = new CancellationTokenSource()) {
+            var pending = picker.Pick("executable", cancel.Token);
+            var duplicateRefused = false;
+            try { await picker.Pick("manifest"); } catch (InvalidOperationException) { duplicateRefused = true; }
+            Check(duplicateRefused && pickerCalls == 1, "uma única seleção nativa, sem duplicação entre abas");
+            cancel.Cancel();
+            var cancelled = false;
+            try { await pending; } catch (OperationCanceledException) { cancelled = true; }
+            Check(cancelled, "cancelamento recebido pelo seletor");
+        }
+        requested = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retry = picker.Pick("executable"); requested.SetResult(@"C:\Fixture\Game.exe");
+        Check(await retry == @"C:\Fixture\Game.exe", "seletor funciona novamente após cancelar");
+        requested = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failure = picker.Pick("image"); requested.SetException(new IOException("fixture"));
+        try { await failure; } catch (IOException) { }
+        requested = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var afterFailure = picker.Pick("folder"); requested.SetResult(null);
+        Check(await afterFailure == null && pickerCalls == 4, "erro e Cancelar do Windows liberam seletor sem resultado falso");
         var root = Path.Combine(Path.GetTempPath(), "lg-hub-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try {

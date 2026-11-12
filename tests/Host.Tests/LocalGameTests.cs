@@ -27,6 +27,7 @@ static class LocalGameTests
             var registration = new LocalGameRegistration(executable, installed, metadata);
             var manifest = Path.Combine(root, "import.json"); File.WriteAllText(manifest, JsonSerializer.Serialize(registration));
             var store = new LocalGameStore(data); var id = store.Import(manifest); store.Import(manifest);
+            new LibrarySettings(data).Save(new([], Steam: false, Automatic: false));
             var library = new GameLibrary(data, false, Path.Combine(root, "no-steam"), [Path.GetDirectoryName(installed)!, installed + Path.DirectorySeparatorChar], true);
             Check(library.Games.Count == 1, "cadastro repetido e descoberta da mesma pasta não duplicam o jogo");
             var game = library.Games.Single();

@@ -55,7 +55,8 @@ static class RuntimeDiagnosticsTests
             Check(Directory.GetDirectories(Path.Combine(retention, "diagnostics"), "run-*").Length <= 3 && Directory.GetFiles(Path.Combine(retention, "diagnostics", "reports"), "*.zip").Length is > 0 and <= 3, "retenção limita execuções e pacotes automáticos de relatório");
             using (var live = new RuntimeDiagnostics(Path.Combine(root, "live"))) {
                 live.Record("test", "live-error", true);
-                for (int i = 0; i < 40 && !Directory.Exists(Path.Combine(live.Root, "reports")); i++) await Task.Delay(100);
+                // Creating the directory precedes the atomic publication of the ZIP.
+                for (int i = 0; i < 40 && (!Directory.Exists(Path.Combine(live.Root, "reports")) || Directory.GetFiles(Path.Combine(live.Root, "reports"), "*.zip").Length == 0); i++) await Task.Delay(100);
                 Check(Directory.Exists(Path.Combine(live.Root, "reports")) && Directory.GetFiles(Path.Combine(live.Root, "reports"), "*.zip").Length == 1, "falha gera ZIP automaticamente com o app ainda aberto");
                 for (int i = 0; i < 700; i++) live.Record("test", "case-" + i, true, new InvalidOperationException(new string('x', 1800)));
                 Check(File.Exists(Path.Combine(live.RunDirectory, "events.previous.jsonl")) && Directory.GetFiles(live.RunDirectory, "events*.jsonl").All(f => new FileInfo(f).Length < 1_081_344), "log rotaciona e mantém limite em rajada de erros distintos");
